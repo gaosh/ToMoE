@@ -320,7 +320,7 @@ def main(
         min_hn_lr=min_hn_lr,
         use_fsdp=use_fsdp,
         save_interval=save_interval,
-        adam_8bit=adam_8bit,
+
         kd_loss=kd_loss,
         )
     toc = time.time() - tic
@@ -338,22 +338,16 @@ def train_hn(
     ignored_token=-1,
     log_interval=1,
     max_iter=None,
-    bf_16=True,
+
     fsdp=True,
     out_dir=None,
     p=None,
 
     hn_block_size=2048,
     hn_lr=1e-3,
-    min_hn_lr=1e-3,
-
-    use_fsdp=False,
-    load_balance = True,
 
     save_interval=5000,
     kd_loss = True,
-
-    adam_8bit=False,
 
 
 ) -> None:
