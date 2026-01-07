@@ -200,9 +200,10 @@ class hn_module_list(nn.Module):
         self.model_list = torch.nn.ModuleList([rnn, experts_list])
     def forward(self, x=None):
         vectors = self.model_list[0]()
-        width_loss, pair_loss, hard_c_out, hard_out = self.model_list[1].resource_forward(vectors)
+        pair_loss, hard_out = self.model_list[1].resource_forward(vectors)
 
-        return vectors, width_loss, pair_loss, hard_c_out, hard_out
+        return vectors, pair_loss, hard_out
+    
     def set_hn_inputs_grad(self, ):
         self.model_list[0].inputs.requires_grads = True
 
