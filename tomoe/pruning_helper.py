@@ -404,7 +404,7 @@ def is_numeric(var):
     return isinstance(var, (int, float, complex))
 
 class help_functions_hn(nn.Module):
-    def __init__(self, structures, load_balance_alpha=1, num_experts=8, beta=2.0, attn_alpha=2.0, attn_max_reg_loss=False,):
+    def __init__(self, structures, load_balance_alpha=1, num_experts=8, beta=2.0):
         self.structures = structures
         
         self.num_moe_layers = len(structures)
@@ -421,8 +421,6 @@ class help_functions_hn(nn.Module):
                 self.width_list.append([0, 0])
             else:               # even: 2,4,6,...
                 self.width_list.append(0)
-        self.attn_max_reg_loss = attn_max_reg_loss
-        self.attn_alpha = attn_alpha
 
         self.att_topk_list = [0]*int(self.num_moe_layers/2)
     def print_info(self,vectors):
@@ -558,30 +556,6 @@ class help_functions_hn(nn.Module):
                     num_attn_layers+=1
         return sum_loss/num_attn_layers
     
-    def get_attn_reg_loss(self, model, iter_num=0, targets=None, num_heads=32):
-        decay_factor = 0.999
-        window_iters = 1000
-        sum_loss = 0
-        num_attn_layers = 0
-        modules = list(model.modules())
-
-        if targets!=None:
-            truncated_targets = [item for item in targets if item <= num_heads]
-        for layer_id in range(len(modules)):
-            m = modules[layer_id]
-
-            if type(m).__name__ == 'single_experts_module':
-                if m.attn_flag:
-                    if targets!=None:
-                        current_target = truncated_targets[num_attn_layers]
-                        binary_app = m.binary_approx_x[:,:m.mlp_dim]
-                        ratio_tensor = torch.Tensor([int(current_target.item())/binary_app.size(-1)]).to(binary_app.get_device())
-                        sum_loss+=minmax_reg_loss(binary_app.sum(-1)/binary_app.size(-1), ratio_tensor,c=0.01)
-                    num_attn_layers+=1
-        sum_loss=sum_loss/num_attn_layers
-        return self.attn_alpha * sum_loss
-
-    
     def pair_attn_loss(self, model):
         sum_loss = 0
         num_moe_layers = 0
@@ -600,11 +574,6 @@ class help_functions_hn(nn.Module):
                     pair_loss = minmax_reg_loss(union_of_experts, target.float(), c=0.001)
                     pair_loss = custom_grad_weight.apply(pair_loss,0.2)
                     sum_loss+=pair_loss
-                num_moe_layers+=1
-            if type(m).__name__ == 'single_topk_experts_module':
-                union_of_experts = experts_union(m.binary_approx_x)
-                pair_loss = minmax_reg_loss(union_of_experts.mean(), torch.scalar_tensor(1).to(union_of_experts.get_device()).float(), c=0.001)
-                sum_loss+=pair_loss
                 num_moe_layers+=1
         return self.beta * sum_loss/num_moe_layers
 

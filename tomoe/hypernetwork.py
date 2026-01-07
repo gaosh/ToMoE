@@ -153,7 +153,7 @@ def experts_union(experts_feature):
     return 1 - torch.prod(1 - experts_feature, dim=0)
 
 class experts_module_list(nn.Module):
-    def __init__(self, structures, model_dim, experts=8, alpha=1, head_dim=128, qk_static_flag=False, num_kv_heads=1):
+    def __init__(self, structures, model_dim, experts=8, alpha=1, head_dim=128, qk_static_flag=True, num_kv_heads=1):
         super(experts_module_list, self).__init__()
         self.structures = structures
         self.attn_flag = [False]*len(self.structures)
