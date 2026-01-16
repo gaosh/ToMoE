@@ -90,11 +90,11 @@ def round_to_block_size(current_rank, block_size=32):
     return round_rank
 
 def main(
-    exp_name: str = 'FlashLM',
+    exp_name: str = 'ToMoE',
     dataset_list: list = ['refinedweb'],
     dataset_ratio: list = [1], 
     out_dir: str = None,
-    hf_model: str = '/group-volume/models/AIC/aic-v06/hf',
+    hf_model: str = 'meta-llama/Llama-2-7b-hf',
     learning_rate: float = None,
     total_n_step: int = 100000,
     start_iter: int = 0, 
@@ -106,27 +106,18 @@ def main(
    
     num_workers: int = 2,
     rand_seed: int = None,
-
-    adam_8bit:bool = False,
-    # hn_groupsize: int = 1,
+    
     dynamic_alpha: float = 1.0,
     load_balance_alpha: float = 1.0,
     dynamic_beta: float = 1.0,
     dynamic_experts: int = 8,
-    
     kd_loss: bool = False,
-
     compile_flag: bool = True,
-
     p: float = 0.48,
     lam: float = 16.0,
-    
     hn_block_size = 2048,
-   
     hn_lr: float = 1e-3,
     min_hn_lr: float = 1e-3,
-
-    T: float = 0.4,
     dataset_seed: int = 42,
 ):
     """ Llama model pretraining recipe
@@ -156,9 +147,8 @@ def main(
     data_type = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     # parameter processing
     if out_dir is None:
-        user_name = 's.gao1'
-        dateTimeObj = datetime.datetime.now()
-        out_dir = os.path.join('/group-volume/models/temp', user_name, exp_name)
+        dir_name = exp_name + '_' + hf_model
+        out_dir = os.path.join('./', dir_name)
     if rand_seed is None:
         rand_seed = start_iter
     if learning_rate is None:
