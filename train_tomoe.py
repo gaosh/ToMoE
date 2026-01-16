@@ -14,7 +14,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, LlamaF
 from datasets import IterableDataset
 
 from utils import DistributedEnv, softmax_fp32, log_softmax_fp32
-from data import dataloader_creator, load_hf_dataset_wiki, load_hf_dataset_alpaca
+from data import dataloader_creator, load_hf_dataset_wiki, load_hf_dataset_alpaca, load_hf_dataset_mixed
 
 
 from flashlm.compression.factorize.param_util import unwrap_model
