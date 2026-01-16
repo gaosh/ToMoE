@@ -54,10 +54,8 @@ def gumbel_sigmoid_function(logits: torch.Tensor, tau: float = 1, hard: bool = F
 
     if hard:
         # Straight through.
-        indices = (y_soft > 0.5).nonzero(as_tuple=True)
-        y_hard = torch.zeros_like(logits, memory_format=torch.legacy_contiguous_format, device=device)
-        y_hard[indices[0], indices[1]] = 1.0
-        ret = y_hard - y_soft.detach() + y_soft
+        y_hard = torch.round(y_soft)
+        ret = (y_hard - y_soft).detach() + y_soft
     else:
         # Reparametrization trick.
         ret = y_soft
