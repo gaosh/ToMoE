@@ -63,21 +63,6 @@ def gumbel_sigmoid_function(logits: torch.Tensor, tau: float = 1, hard: bool = F
         ret = y_soft
     return ret
 
-def gumbel_sigmoid_sample(logits, T, offset=0, sample=True):
-    gumbel_sample = sample_gumbel(logits.size())
-    if logits.get_device() == -1:
-        logits = logits.cpu()
-        gumbel_sample = gumbel_sample.cpu()
-    else:
-        gumbel_sample = gumbel_sample.to(logits.get_device())
-
-    if sample:
-        y = logits + gumbel_sample + offset
-    else:
-        y = logits + offset
-
-    return F.sigmoid(y/T)
-
 def gumbel_softmax_sample(logits,  T, sample=True):
     gumbel_sample = sample_gumbel(logits.size())
     if logits.get_device() == -1:

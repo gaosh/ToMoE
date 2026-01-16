@@ -269,7 +269,7 @@ def main(
 
             
     if compile_flag:
-        model = torch.compile(model, backend="eager")
+        model = torch.compile(model)
     if use_ddp:
         model = DDP(model)
 
