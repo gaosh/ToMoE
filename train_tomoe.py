@@ -89,10 +89,11 @@ def round_to_block_size(current_rank, block_size=32):
 
 def main(
     exp_name: str = 'ToMoE',
-    dataset_list: list = ['refinedweb'],
+    dataset_list: list = ['mix'],
     dataset_ratio: list = [1], 
     out_dir: str = None,
     hf_model: str = 'meta-llama/Llama-2-7b-hf',
+    dataset_path: str = '/orange/sgao1/sgao1/',
     learning_rate: float = None,
     total_n_step: int = 100000,
     start_iter: int = 0, 
@@ -189,7 +190,7 @@ def main(
     elif 'alpaca' in dataset_list:
         result_dataset = load_hf_dataset_alpaca(env.world_size*num_workers, dataset_seed)
     elif 'mix' in dataset_list:
-        result_dataset = load_hf_dataset_mixed(env.world_size*num_workers, dataset_seed)
+        result_dataset = load_hf_dataset_mixed(env.world_size*num_workers, dataset_seed, root_path=dataset_path)
 
     dataloader_hn = dataloader_creator(
         dataset=result_dataset, 

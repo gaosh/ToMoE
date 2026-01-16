@@ -163,7 +163,7 @@ def format_prompt_style_batch(batch):
         out.append("\n\n".join(parts))
     return {"text": out}
 
-def load_hf_dataset_mixed(n_shards=None, seed=777, splits=[0.25,0.25,0.25,0.25], root_path = "/orange/yonghui.wu/sgao1"):
+def load_hf_dataset_mixed(n_shards=None, seed=777, splits=[0.25,0.25,0.25,0.25], root_path = "./"):
     os.makedirs(root_path, exist_ok=True)
     cache_dir = os.path.join(root_path, "datasets")
     os.makedirs(cache_dir, exist_ok=True)
