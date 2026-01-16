@@ -9,13 +9,6 @@ from itertools import chain
 from torch.utils.data import DataLoader
 
 
-# Automatically downloaded dataset from Hugging Face
-def load_hf_dataset_wikitext(split='train', n_shards=None):
-
-    ds = load_dataset("wikitext", "wikitext-103-raw-v1", split=split, streaming=True)
-    ds = ds.select_columns("text")
-    return ds
-
 def is_distirbuted_dataset(iterable):
     return False
 
