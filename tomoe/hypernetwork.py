@@ -182,7 +182,7 @@ class experts_module_list(nn.Module):
 
         for i in range(self.num_modules):
             if self.attn_flag[i]:
-                pair_loss, width_mean = self.module_list[i].emb_constrain(rnn_states[i], head_dim=self.head_dim)
+                pair_loss, width_mean = self.module_list[i].emb_constrain(rnn_states[i])
             else:
                 pair_loss, width_mean= self.module_list[i].emb_constrain(rnn_states[i])
 
