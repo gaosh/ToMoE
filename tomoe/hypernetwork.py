@@ -336,7 +336,7 @@ class single_experts_module(nn.Module):
         if self.attn_flag:
             #width_final = []
             #full_embeding = rnn_state
-            #device = rnn_state.get_device()
+            device = rnn_state.get_device()
             pair_loss =  torch.scalar_tensor(0).to(device).float()
             width_final = torch.scalar_tensor(0).to(device).float()
             # width_final = torch.scalar_tensor(0).to(device).float()
