@@ -107,7 +107,6 @@ def main(
     
     dynamic_alpha: float = 1.0,
     load_balance_alpha: float = 1.0,
-    dynamic_beta: float = 1.0,
     dynamic_experts: int = 8,
     kd_loss: bool = False,
     compile_flag: bool = True,
