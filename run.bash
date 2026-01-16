@@ -9,4 +9,4 @@ CUDA_VISIBLE_DEVICES=0 nohup torchrun --nproc_per_node=1 --master_port=12343 tra
 --total_n_step 20000 \
 --lam 16.0 \
 --dataset_list ['alpaca'] \
---dataset_seed 777 --use_sch False --use_fsdp False  --out_dir /orange/sgao1/sgao1/saved_hns/hn_prune_llama2_7b > llama2_7b_0.5_e8_new.txt 2>&1 &
+--dataset_seed 777 --use_fsdp False  --out_dir /orange/sgao1/sgao1/saved_hns/hn_prune_llama2_7b > llama2_7b_0.5_e8_new.txt 2>&1 &

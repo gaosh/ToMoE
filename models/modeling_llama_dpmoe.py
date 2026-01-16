@@ -34,7 +34,7 @@ from transformers import LlamaConfig
 import sys
 sys.path.append('/group-volume/users/s.gao1/code/FlashLM/')
 sys.path.append('/gpfs-volume/flashlm/FlashLM/')
-from flashlm.compression.dynamic_moe.hypernetwork import virtual_mlp_operation, virtual_basic_operation, virtual_att_operation, virtual_block_attn_operation, virtual_block_basic_operation, virtual_dynamic_operation, virtual_vo_operation
+from tomoe.hypernetwork import virtual_mlp_operation, virtual_basic_operation, virtual_att_operation, virtual_block_attn_operation, virtual_block_basic_operation, virtual_dynamic_operation, virtual_vo_operation
 if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
