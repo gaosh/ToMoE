@@ -118,22 +118,6 @@ def main(
     min_hn_lr: float = 1e-3,
     dataset_seed: int = 42,
 ):
-    """ Llama model pretraining recipe
-    Args:
-        exp_name: it will be part of the output folder name if out_dir=None
-        dataset_list: ex: --dataset_list ['pile', 'korean', 'slimpajama', 'refinedweb']
-        dataset_ratio: ex: --dataset_ratio [0.2, 0.3, 0.2, 0.3]
-        out_dir: output folder
-        hf_model: ex: huggyllama/llama-7b, /group-volume/models/llm/llama/hugginface/Llama-2-7b-hf
-        learning_rate: if none, the recipe will compute it automatically based on the batch size, block size, and number of GPU
-        total_n_step: total number of training steps
-        start_iter: This is approximated resume (no overhead). Ex: start_iter=2000, the code will start from 2000 iter with a different batch sampling seed.
-        resume_iter: This is the exact resume (large overhead). Ex: resume_iter=1000, the code will generate the first 1000 batches without training. The training starts at iter=1001.
-        use_bf16: bf16 does not need mixed-precision, thus it is friendly for gradient accumulation
-        rand_seed: the seed will be used to shuffle the dataloader
-        non_hf_tokenizer_path: The HF tokenizer is very slow with Pile dataset due to an unknown issue (but the mixed dataset is ok). Use an external tokenizer when training with Pile only. ex: /data-sets/sdp-text/llm-models/llama/7B/tokenizer.model
-        cd /group-volume/users/s.gao1/code/FlashLM
-    """
 
     # Distributed environment setup
     env = DistributedEnv()
@@ -300,7 +284,6 @@ def main(
         param_reg=param_reg,
         ignored_token=ignored_token,
         max_iter=total_n_step,
-        bf_16=use_bf16,
         out_dir=out_dir,
         p=p,
         hn_block_size=hn_block_size,
