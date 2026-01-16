@@ -287,7 +287,7 @@ def main(
         p=p,
         hn_block_size=hn_block_size,
         hn_lr=hn_lr,
-        use_fsdp=use_fsdp,
+        fsdp=use_fsdp,
         save_interval=save_interval,
 
         kd_loss=kd_loss,
