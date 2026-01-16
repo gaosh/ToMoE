@@ -13,11 +13,9 @@ import torch.nn.functional as F
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer, LlamaForCausalLM
 from datasets import IterableDataset
 
-from utils import DistributedEnv, softmax_fp32, log_softmax_fp32
+from utils import DistributedEnv, softmax_fp32, log_softmax_fp32, unwrap_model
 from data import dataloader_creator, load_hf_dataset_wiki, load_hf_dataset_alpaca, load_hf_dataset_mixed
 
-
-from flashlm.compression.factorize.param_util import unwrap_model
 import bitsandbytes as bnb
 # from hypernetwork import hypernetwork
 
