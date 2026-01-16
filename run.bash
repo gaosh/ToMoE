@@ -1,4 +1,4 @@
-CUDA_VISIBLE_DEVICES=0 nohup torchrun --nproc_per_node=1 --master_port=12343 recipe_train_sharing.py \
+CUDA_VISIBLE_DEVICES=0 nohup torchrun --nproc_per_node=1 --master_port=12343 train_tomoe.py \
 --use_bf16 True \
 --dynamic_alpha 0 \
 --save_interval 100000 \
