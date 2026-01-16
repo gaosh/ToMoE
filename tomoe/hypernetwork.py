@@ -330,8 +330,9 @@ class single_experts_module(nn.Module):
     def emb_constrain(self, rnn_state):
         #8x128
         # full_embeding = self.experts_embeding + rnn_state[None,:]
+        width_final = []
         if self.attn_flag:
-            width_final = []
+            full_embeding = rnn_state
             device = rnn_state.get_device()
             pair_loss =  torch.scalar_tensor(0).to(device).float()
             # width_final = torch.scalar_tensor(0).to(device).float()
@@ -347,8 +348,6 @@ class single_experts_module(nn.Module):
             binary = gumbel_sigmoid_function(logits=out_before_binary, tau=self.T, offset=self.base, sample=True, hard=True).squeeze()
 
             device = binary.get_device()
-            if device == '-1':
-                device = 'cpu'
 
             union_of_experts = experts_union(binary)
             
