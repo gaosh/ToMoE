@@ -137,7 +137,8 @@ def main(
         learning_rate = min(llama_learning_rate_per_sample * batch_size * 4096 * env.world_size, 0.0003)
     if env.global_rank == 0:
         os.makedirs(out_dir, exist_ok=True)
-
+        
+    torch._inductor.config.realize_opcount_threshold = 100
     # GPU preparation
     device_id = env.local_rank
     torch.cuda.set_device(device_id)
