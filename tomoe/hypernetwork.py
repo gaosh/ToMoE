@@ -253,6 +253,7 @@ class single_experts_module(nn.Module):
             output_dynamic = self.linear_decoder(F.gelu(self.ln(routed_emb)))[:, :self.head_dim]  # Shape: [batch_size, head_dim + int(mlp_dim/2)]
             output_constant = self.linear_decoder(F.gelu(self.ln(rnn_state.mean(dim=0).unsqueeze(0))))[:, self.head_dim:]
             output_constant = output_constant.expand(batch_size, num_tokens, -1)
+            print(output_dynamic.shape)
 
             out_before_binary = torch.cat([output_dynamic, output_constant], dim=-1)
             if output_dynamic.ndim==2:
