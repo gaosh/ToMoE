@@ -157,7 +157,7 @@ class experts_module_list(nn.Module):
         super(experts_module_list, self).__init__()
         self.structures = structures
         self.attn_flag = [False]*len(self.structures)
-
+        self.module_list = nn.ModuleList()
         self.attn_experts = False
         self.use_gated_attn_flag = [False]*len(self.structures)
         self.use_top_k_mlp = [False]*len(self.structures)
