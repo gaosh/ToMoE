@@ -420,7 +420,6 @@ def train_hn(
             else:
                 loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
 
-        
             reg_loss = param_reg(hard_out)
 
             loss = loss + reg_loss + pair_loss + load_balance_loss

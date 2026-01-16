@@ -164,72 +164,51 @@ class collect_info_reg_llama(nn.Module):
             return sum_params
         
     def forward(self, vectors):
-        if self.width_piror != None:
-            index = 0
-            sum_loss = 0
-            model_dim = self.model_dim
-            for index in range(len(vectors)):
-                if self.structures[index] == self.num_heads:
-                    current_params =  model_dim * 2 * self.num_heads*vectors[index][1] + model_dim * 2 *  vectors[index][0]*self.head_dim*self.num_groups
-                    target_params = model_dim * 2 * self.width_piror[index]*self.head_dim + model_dim * 2 *  self.width_piror[index]*self.head_dim*self.num_groups
-                    local_params =  model_dim * 2 * self.structures[index] *self.head_dim + model_dim * 2 *   self.structures[index] *self.head_dim*self.num_groups
-                else:
-                    block_mlp_in_dim = model_dim
-                    block_mlp_middle_dim = vectors[index]
-                    block_mlp_out_dim = model_dim
-                    current_params = block_mlp_in_dim*block_mlp_middle_dim +  block_mlp_in_dim*block_mlp_middle_dim + block_mlp_middle_dim*block_mlp_out_dim
-                    target_params = block_mlp_in_dim*self.width_piror[index] +  block_mlp_in_dim*self.width_piror[index] + self.width_piror[index]*block_mlp_out_dim
-                    local_params =  block_mlp_in_dim*self.structures[index] +  block_mlp_in_dim*self.structures[index] + self.structures[index]*block_mlp_out_dim
-                sum_loss = sum_loss + minmax_reg_loss(current_params/local_params, target_params/local_params, c=0.01)
-                #index+=1
-            loss = sum_loss/len(vectors)
-        else:
+        att_flag = False
+        sum_params = 0
+        np_sum_params = 0
 
-            att_flag = False
-            sum_params = 0
-            np_sum_params = 0
+        i = 0
+        ind = 0
+        model_dim = self.model_dim
+        while i < len(self.out_dim_list):
+            #### for attn block ####
+            if self.gate_type[i] == 'attn':
+                
+                # current_params =  model_dim * 2 * self.num_heads*vectors[ind][1] + model_dim * 2 * vectors[ind][0]*self.num_heads*self.num_groups
+                reg_heads = model_dim * self.num_heads*vectors[ind][1] +  model_dim * self.num_heads*vectors[ind][0] 
+                kv_heads = model_dim * self.num_kv_heads*vectors[ind][1] +  model_dim * self.num_kv_heads*vectors[ind][0] 
+                current_params = reg_heads + kv_heads
+        
+                ind +=1
+                i=i+1
+                sum_params += current_params
+                att_flag = True
 
-            i = 0
-            ind = 0
-            model_dim = self.model_dim
-            while i < len(self.out_dim_list):
-                #### for attn block ####
-                if self.gate_type[i] == 'attn':
-                    
-                    # current_params =  model_dim * 2 * self.num_heads*vectors[ind][1] + model_dim * 2 * vectors[ind][0]*self.num_heads*self.num_groups
-                    reg_heads = model_dim * self.num_heads*vectors[ind][1] +  model_dim * self.num_heads*vectors[ind][0] 
-                    kv_heads = model_dim * self.num_kv_heads*vectors[ind][1] +  model_dim * self.num_kv_heads*vectors[ind][0] 
-                    current_params = reg_heads + kv_heads
-            
-                    ind +=1
-                    i=i+1
-                    sum_params += current_params
-                    att_flag = True
+            elif self.gate_type[i] == 'mlp':
+                block_mlp_in_dim = model_dim
+                block_mlp_middle_dim = vectors[ind]
+                block_mlp_out_dim = model_dim
+                current_params = block_mlp_in_dim*block_mlp_middle_dim +  block_mlp_in_dim*block_mlp_middle_dim + block_mlp_middle_dim*block_mlp_out_dim
+                i=i+1
+                ind +=1
+                if not torch.is_tensor(sum_params):
+                    sum_params = torch.as_tensor(sum_params, device=current_params.device, dtype=current_params.dtype)
 
-                elif self.gate_type[i] == 'mlp':
-                    block_mlp_in_dim = model_dim
-                    block_mlp_middle_dim = vectors[ind]
-                    block_mlp_out_dim = model_dim
-                    current_params = block_mlp_in_dim*block_mlp_middle_dim +  block_mlp_in_dim*block_mlp_middle_dim + block_mlp_middle_dim*block_mlp_out_dim
-                    i=i+1
-                    ind +=1
-                    if not torch.is_tensor(sum_params):
-                        sum_params = torch.as_tensor(sum_params, device=current_params.device, dtype=current_params.dtype)
+                # promote scalar -> tensor with matching shape if needed
+                if sum_params.ndim == 0:
+                    sum_params = sum_params.expand_as(current_params).clone()
+                sum_params += current_params
 
-                    # promote scalar -> tensor with matching shape if needed
-                    if sum_params.ndim == 0:
-                        sum_params = sum_params.expand_as(current_params).clone()
-                    sum_params += current_params
-
-                else:
-                    i=i+1
-            param_ratio = sum_params / (self.sum_ori_params - np_sum_params)
-            corrected_p = (self.sum_ori_params*self.p - np_sum_params)/(self.sum_ori_params - np_sum_params)
-            # print(np_sum_params)
-            # print(param_ratio)
-            if not torch.is_tensor(corrected_p):
-                corrected_p = torch.as_tensor(corrected_p, device=current_params.device, dtype=current_params.dtype)
-            loss = minmax_reg_loss(param_ratio, corrected_p, c=0.001)
+            else:
+                i=i+1
+        param_ratio = sum_params / (self.sum_ori_params - np_sum_params)
+        corrected_p = (self.sum_ori_params*self.p - np_sum_params)/(self.sum_ori_params - np_sum_params)
+        # print(np_sum_params)
+        # print(param_ratio)
+        if not torch.is_tensor(corrected_p):
+            corrected_p = torch.as_tensor(corrected_p, device=current_params.device, dtype=current_params.dtype)
+        loss = minmax_reg_loss(param_ratio, corrected_p, c=0.001)
 
         return self.lam * loss
 

@@ -332,15 +332,17 @@ class single_experts_module(nn.Module):
     def emb_constrain(self, rnn_state):
         #8x128
         # full_embeding = self.experts_embeding + rnn_state[None,:]
-        width_final = []
+        
         if self.attn_flag:
-            full_embeding = rnn_state
-            device = rnn_state.get_device()
+            #width_final = []
+            #full_embeding = rnn_state
+            #device = rnn_state.get_device()
             pair_loss =  torch.scalar_tensor(0).to(device).float()
+            width_final = torch.scalar_tensor(0).to(device).float()
             # width_final = torch.scalar_tensor(0).to(device).float()
-            output_constant = self.linear_decoder(F.gelu(self.ln(full_embeding.mean(dim=0).unsqueeze(0))))[:, self.head_dim:]
-            binary = gumbel_sigmoid_function(logits=output_constant, tau=self.T, offset=self.base, sample=True, hard=True).squeeze()
-            width_final.append(binary[...,:self.head_dim].sum(-1).squeeze())
+            # output_constant = self.linear_decoder(F.gelu(self.ln(full_embeding.mean(dim=0).unsqueeze(0))))[:, self.head_dim:]
+            # binary = gumbel_sigmoid_function(logits=output_constant, tau=self.T, offset=self.base, sample=True, hard=True).squeeze()
+            # width_final.append(binary[...,:self.head_dim].sum(-1).squeeze())
 
             return pair_loss.to(device), width_final
         else:
