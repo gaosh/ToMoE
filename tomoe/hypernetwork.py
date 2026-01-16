@@ -248,6 +248,7 @@ class single_experts_module(nn.Module):
             #num_tokens = x.size(1)
             batch_size, num_tokens, _ = x.shape  # x: (B, T, emb_dim)
             routed_emb = out + rnn_state.mean(dim=0)
+            print(out.shape)
 
             output_dynamic = self.linear_decoder(F.gelu(self.ln(routed_emb)))[:, :self.head_dim]  # Shape: [batch_size, head_dim + int(mlp_dim/2)]
             output_constant = self.linear_decoder(F.gelu(self.ln(rnn_state.mean(dim=0).unsqueeze(0))))[:, self.head_dim:]
