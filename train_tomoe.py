@@ -115,7 +115,6 @@ def main(
     lam: float = 16.0,
     hn_block_size = 2048,
     hn_lr: float = 1e-3,
-    min_hn_lr: float = 1e-3,
     dataset_seed: int = 42,
 ):
 
@@ -288,7 +287,6 @@ def main(
         p=p,
         hn_block_size=hn_block_size,
         hn_lr=hn_lr,
-        min_hn_lr=min_hn_lr,
         use_fsdp=use_fsdp,
         save_interval=save_interval,
 
