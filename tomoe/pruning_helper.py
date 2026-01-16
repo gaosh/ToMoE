@@ -502,7 +502,7 @@ class help_functions_hn(nn.Module):
         for layer_id in range(len(modules)):
             m = modules[layer_id]
             if type(m).__name__ == 'single_experts_module':
-                width_list.append(m.binary_approx_x.sum(-1).mean())
+                width_list.append(m.binary.sum(-1).mean())
         return width_list
 
     def get_attn_hard_out(self,model, width_list, ref_width_list=None, qk_static=True, eval_flag=False):
@@ -520,11 +520,11 @@ class help_functions_hn(nn.Module):
 #                    if m.attn_flag and not m.static_flag:
                     if m.attn_flag:
                         #attn_width_list.append(m.binary_approx_x.sum(-1).max())
-                        current_list.append(m.binary_approx_x[...,:m.mlp_dim].sum(-1).max())
-                        if m.binary_approx_x.size(-1) - m.mlp_dim < m.head_dim:
-                            binary_head_dim = m.binary_approx_x[...,m.mlp_dim:].repeat(1,1,2).view(-1, m.num_kv_heads,m.head_dim)
+                        current_list.append(m.binary[...,:m.mlp_dim].sum(-1).max())
+                        if m.binary.size(-1) - m.mlp_dim < m.head_dim:
+                            binary_head_dim = m.binary[...,m.mlp_dim:].repeat(1,1,2).view(-1, m.num_kv_heads,m.head_dim)
                         else:
-                            binary_head_dim = m.binary_approx_x[...,m.mlp_dim:].view(-1, m.num_kv_heads,m.head_dim)
+                            binary_head_dim = m.binary[...,m.mlp_dim:].view(-1, m.num_kv_heads,m.head_dim)
                         #current_list.append(m.binary_approx_x[:,m.mlp_dim:].sum(-1).max())
                         current_list.append(binary_head_dim.sum(-1).max())
                         attn_width_list.append(current_list)
@@ -566,9 +566,9 @@ class help_functions_hn(nn.Module):
                 #if m.attn_flag and not m.static_flag:
                 if m.attn_flag:
                     if m.qk_static_flag:
-                        union_of_experts = experts_union(m.binary_approx_x[:,:m.head_dim])
+                        union_of_experts = experts_union(m.binary[:,:m.head_dim])
                     else:
-                        union_of_experts = experts_union(m.binary_approx_x)
+                        union_of_experts = experts_union(m.binary)
                     target = torch.ones(union_of_experts.shape, dtype=union_of_experts.dtype,device=union_of_experts.device)
                     #pair_loss = minmax_reg_loss(union_of_experts.mean(), torch.scalar_tensor(1).to(union_of_experts.get_device()).float(), c=0.001)
                     pair_loss = minmax_reg_loss(union_of_experts, target.float(), c=0.001)

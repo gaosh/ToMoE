@@ -258,6 +258,7 @@ class single_experts_module(nn.Module):
                 output_dynamic = output_dynamic.unsqueeze(0)
 
             binary = gumbel_sigmoid_function(logits=out_before_binary, tau=self.T, offset=self.base, hard=True, sample=True)
+            self.binary = binary
         
         else:
             out = self.linear_router(x)
