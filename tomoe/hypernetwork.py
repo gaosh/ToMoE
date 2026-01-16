@@ -166,7 +166,7 @@ class experts_module_list(nn.Module):
                 #if not attn_experts:
                 self.attn_flag[i] = True
 
-            module = single_experts_module(structures[i], model_dim, head_dim, experts, self.attn_flag[i], self.top_k_flag, qk_static_flag=qk_static_flag, num_kv_heads=num_kv_heads)
+            module = single_experts_module(structures[i], model_dim, head_dim, experts, self.attn_flag[i], qk_static_flag=qk_static_flag, num_kv_heads=num_kv_heads)
 
             self.module_list.append(module)
                     
