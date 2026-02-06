@@ -150,13 +150,13 @@ def convert_to_moe_llama(model, truncated_union_list, hn, dynamic_experts, attn_
                 expert_module.qk_index.copy_(select_index.to(torch.int64))
                 m.experts_module = expert_module
                 cfgs.append(pruned_head_dim)
-            else:
-                expert_module.experts_for_eval.copy_(
-                    torch.ones(dynamic_experts + 1, m.head_dim, dtype=torch.uint8, device=device)
-                )
-                expert_module.qk_index.copy_(torch.arange(m.head_dim, device=device))
-                m.experts_module = expert_module
-                cfgs.append(m.head_dim)
+            # else:
+            #     expert_module.experts_for_eval.copy_(
+            #         torch.ones(dynamic_experts + 1, m.head_dim, dtype=torch.uint8, device=device)
+            #     )
+            #     expert_module.qk_index.copy_(torch.arange(m.head_dim, device=device))
+            #     m.experts_module = expert_module
+            #     cfgs.append(m.head_dim)
             moe_index += 1
 
         if type(m).__name__ == "LlamaMLP":
