@@ -64,6 +64,45 @@ logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "LlamaConfig"
 
+def gumbel_sigmoid_function(logits: torch.Tensor, tau: float = 1, hard: bool = False,  sample: bool = True, offset=0) -> torch.Tensor:
+    """
+    Samples from the Gumbel-Sigmoid distribution and optionally discretizes.
+    The discretization converts the values greater than `threshold` to 1 and the rest to 0.
+    The code is adapted from the official PyTorch implementation of gumbel_softmax:
+    https://pytorch.org/docs/stable/_modules/torch/nn/functional.html#gumbel_softmax
+
+    Args:
+      logits: `[..., num_features]` unnormalized log probabilities
+      tau: non-negative scalar temperature
+      hard: if ``True``, the returned samples will be discretized,
+            but will be differentiated as if it is the soft sample in autograd
+     threshold: threshold for the discretization,
+                values greater than this will be set to 1 and the rest to 0
+
+    Returns:
+      Sampled tensor of same shape as `logits` from the Gumbel-Sigmoid distribution.
+      If ``hard=True``, the returned samples are descretized according to `threshold`, otherwise they will
+      be probability distributions.
+
+    """
+    if sample:
+        device = logits.get_device()
+        gumbels = (
+        -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format, device=device).exponential_().log()
+        )  # ~Gumbel(0, 1)
+        gumbels = (logits + gumbels + offset) / tau  # ~Gumbel(logits, tau)
+    else:
+        gumbels = (logits + offset) / tau  # ~Gumbel(logits, tau)
+    y_soft = gumbels.sigmoid()
+
+    if hard:
+        # Straight through.
+        y_hard = torch.round(y_soft)
+        ret = (y_hard - y_soft).detach() + y_soft
+    else:
+        # Reparametrization trick.
+        ret = y_soft
+    return ret
 
 def _get_unpad_data(attention_mask):
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
@@ -84,22 +123,6 @@ def hard_sample(out):
     binary_out = torch.round(out)
     binary_out = (binary_out - out).detach() + out
     return binary_out
-
-#@torch.compile
-def gumbel_sigmoid_sample(logits, T, offset=0, sample=True):
-    gumbel_sample = sample_gumbel(logits.size())
-    if logits.get_device() == -1:
-        logits = logits.cpu()
-        gumbel_sample = gumbel_sample.cpu()
-    else:
-        gumbel_sample = gumbel_sample.to(logits.get_device())
-
-    if sample:
-        y = logits + gumbel_sample + offset
-    else:
-        y = logits + offset
-
-    return F.sigmoid(y/T)
 
 def gumbel_softmax_sample(logits,  T, sample=True):
     gumbel_sample = sample_gumbel(logits.size())
@@ -168,7 +191,10 @@ class single_experts_module(nn.Module):
         if attn_flag:
             self.head_dim = head_dim
 
-            self.linear_router = nn.Linear(self.model_dim, self.experts, bias=False)
+            #self.linear_router = nn.Linear(self.model_dim, self.experts, bias=False)
+            self.linear_router = nn.Linear(self.model_dim, self.emb_dim, bias=False) 
+            self.linear_decoder = nn.Linear(self.emb_dim, mlp_dim, bias=True)
+            self.ln = nn.LayerNorm([self.emb_dim])
 
             self.register_buffer('experts_for_eval', torch.zeros(self.experts+1, self.head_dim).to(torch.uint8))
             self.register_buffer('qk_index', torch.zeros(self.head_dim).to(torch.int64))
@@ -200,16 +226,19 @@ class single_experts_module(nn.Module):
 
     def forward(self, x, return_binary=False):
         if self.attn_flag:
-            if self.experts_list == None:
-                self.experts_list = [torch.nonzero(self.experts_for_eval[i+1,:]) for i in range(self.experts_for_eval.size(0)-1)]
             batch_size, sequence_length, hidden_dim = x.shape
-            out = self.linear_router(x.view(-1,hidden_dim))
-            hard_max, router_logits = gumbel_softmax(out, T=self.T, hard_sample=True, return_soft=True, sample=True)
-            _, indices = hard_max.max(dim=-1)
+
+            out = self.linear_router(x)
+            full_emb = self.rnn_state + out
+            out_before_binary = self.linear_decoder(F.gelu(self.ln(full_emb)))
+
+            binary_approx = gumbel_sigmoid_function(logits=out_before_binary, tau=0.4, offset=3.0, sample=True, hard=False)
+            binary = hard_sample(binary_approx).view(batch_size, sequence_length, -1, self.head_dim)
+            
             if return_binary:
-                return self.experts_for_eval[1:,:][indices,:], router_logits
+                return binary, binary_approx
             else:
-                return indices, router_logits
+                raise NotImplementedError("return_binary must be True")
         else:
             if self.experts_list == None:
                 self.experts_list = [torch.nonzero(self.experts_for_eval[i,:]) for i in range(self.experts_for_eval.size(0))]
