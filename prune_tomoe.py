@@ -83,6 +83,7 @@ def convert_to_moe_llama(model, truncated_union_list, hn, dynamic_experts, attn_
     for m in modules:
         if type(m).__name__ in ("LlamaFlashAttention2", "LlamaAttention", "LlamaSdpaAttention"):
             attn_vector = hn[1].module_list[moe_index].experts_for_eval
+
             expert_module = single_experts_module(
                 m.head_dim,
                 m.hidden_size,
@@ -90,6 +91,23 @@ def convert_to_moe_llama(model, truncated_union_list, hn, dynamic_experts, attn_
                 attn_flag=True,
                 experts=dynamic_experts,
             )
+
+            # expert_weight = hn[1].module_list[moe_index].linear_router.weight.data
+            # eval_experts = hn[1].module_list[moe_index].experts_for_eval
+
+            expert_weight = hn[1].module_list[moe_index].linear_router.weight.data
+            decoder_weight = hn[1].module_list[moe_index].linear_decoder.weight.data
+            ln_weight = hn[1].module_list[moe_index].ln.weight.data
+            ln_bias = hn[1].module_list[moe_index].ln.bias.data
+
+            rnn_state_buffer =  hn[1].module_list[moe_index].rnn_state.mean(dim=0)
+
+            expert_module.linear_router.weight.data.copy_(expert_weight)
+            expert_module.linear_decoder.weight.data.copy_(decoder_weight)
+            expert_module.ln.weight.data.copy_(ln_weight)
+            expert_module.ln.bias.data.copy_(ln_bias)
+            expert_module.rnn_state.copy_(rnn_state_buffer)
+
             if attn_prune and attn_vector is not None:
                 attn_vector = attn_vector.to(device)
                 if attn_vector.ndim != 1 or attn_vector.numel() != m.head_dim:
