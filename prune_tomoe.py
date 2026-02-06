@@ -291,6 +291,7 @@ def main(
     dynamic_width_list = hn_helper.get_dynamic_width_list()
     print(dynamic_width_list)
     moe_modules = list(moe_model.modules())
+    index = 0
     for layer_id in range(len(moe_modules)):
         m = moe_modules[layer_id]
         if type(m).__name__ == 'single_experts_module':
