@@ -147,7 +147,9 @@ def convert_to_moe_llama(model, truncated_union_list, hn, dynamic_experts, attn_
                 mask = torch.zeros(1, m.head_dim, dtype=torch.uint8, device=device)
                 mask[:, select_index] = 1
                 expert_module.experts_for_eval.copy_(mask)
+                expert_module.register_buffer('qk_index', torch.zeros(int(mask.sum())).to(torch.int64))
                 expert_module.qk_index.copy_(select_index.to(torch.int64))
+                
                 m.experts_module = expert_module
                 cfgs.append(pruned_head_dim)
             # else:
