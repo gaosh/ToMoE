@@ -196,7 +196,7 @@ class single_experts_module(nn.Module):
             self.linear_decoder = nn.Linear(self.emb_dim, mlp_dim, bias=True)
             self.ln = nn.LayerNorm([self.emb_dim])
 
-            #self.register_buffer('experts_for_eval', torch.zeros(self.experts+1, self.head_dim).to(torch.uint8))
+            self.register_buffer('experts_for_eval', torch.zeros(1, self.head_dim).to(torch.uint8))
             self.register_buffer('qk_index', torch.zeros(self.head_dim).to(torch.int64))
             self.register_buffer('rnn_state', torch.zeros(self.emb_dim))
 
@@ -583,58 +583,6 @@ class LlamaAttention(nn.Module):
                 )
             else:
                 raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
-    
-    def attention_moe_forward(self, hidden_state, module, transpose=False, provided_binary=None):
-        if provided_binary == None:
-            binary, router_logits = self.experts_module(hidden_state)
-            return_logits = True
-        else:
-            binary = provided_binary
-            return_logits = False
-
-        batch_size, sequence_length, hidden_dim = hidden_state.shape
-        hidden_state = hidden_state.view(-1, hidden_dim)
-        binary = binary.view(batch_size*sequence_length,-1)
-        cnts = binary.new_zeros((binary.shape[0], self.experts_module.experts_for_eval.size(0)))
-        cnts.scatter_(1, binary, 1)
-        tokens_per_expert = cnts.sum(dim=0)
-        idxs = binary.view(-1).argsort()
-        sorted_tokens = hidden_state[idxs]
-        sorted_tokens_shape = sorted_tokens.shape
-        tokens_per_expert = tokens_per_expert.cpu().numpy()
-
-        outputs = []
-        start_idx = 0
-        for i, num_tokens in enumerate(tokens_per_expert):
-            end_idx = start_idx + num_tokens
-            if num_tokens == 0:
-                continue
-            expert = self.experts_module.experts_list[i]
-            tokens_for_this_expert = sorted_tokens[start_idx:end_idx, :]
-
-            if transpose:
-                selected_weight = module.weight.data.view(self.hidden_size, -1, self.head_dim)[:, :, expert].view(self.hidden_size,-1)
-                #selected_bias = module.bias.data
-                selected_bias = None
-            else:
-                selected_weight = module.weight.data.view( -1, self.head_dim, self.hidden_size)[:, expert, :].view(-1, self.hidden_size)
-                if module.bias is not None:
-                    selected_bias = module.bias.data.view(-1, self.head_dim)[:, expert].view(-1)
-                else:
-                    selected_bias = None
-            #print(selected_weight.size())
-            expert_out =  F.linear(tokens_for_this_expert, selected_weight, bias=selected_bias)
-            outputs.append(expert_out)
-            start_idx = end_idx
-        outs = torch.cat(outputs, dim=0)
-        new_x = torch.empty_like(outs)
-        new_x[idxs] = outs
-
-        down_proj = new_x.view(batch_size, sequence_length, -1)
-        if return_logits:
-            return down_proj, binary, router_logits
-        else:
-            return down_proj, binary
 
     def forward(
         self,
@@ -671,13 +619,11 @@ class LlamaAttention(nn.Module):
         else:
             query_states = self.q_proj(hidden_states)
             key_states = self.k_proj(hidden_states)
-            if self.actual_moe:
-                value_states, binary, router_logits = self.attention_moe_forward(hidden_states, self.v_proj)
-            else:
-                binary, router_logits = self.experts_module(hidden_states, return_binary=True)
-                binary_vector = binary.view(bsz,q_len,-1, self.head_dim)
-                value_states = self.v_proj(hidden_states)
-                value_states = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz,q_len,-1)*value_states
+
+            binary, router_logits = self.experts_module(hidden_states, return_binary=True)
+            binary_vector = binary.view(bsz,q_len,-1, self.head_dim)
+            value_states = self.v_proj(hidden_states)
+            value_states = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz,q_len,-1)*value_states
 
         query_states = query_states.view(bsz, q_len, self.num_heads, -1).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, -1).transpose(1, 2)
@@ -721,11 +667,9 @@ class LlamaAttention(nn.Module):
             o_proj_slices = self.o_proj.weight.split(self.hidden_size // self.config.pretraining_tp, dim=1)
             attn_output = sum([F.linear(attn_output[i], o_proj_slices[i]) for i in range(self.config.pretraining_tp)])
         else:
-            if self.actual_moe:
-                attn_output, _ = self.attention_moe_forward(attn_output, self.o_proj, transpose=True, provided_binary=binary)
-            else:
-                attn_output = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz, q_len, -1)*attn_output
-                attn_output = self.o_proj(attn_output)
+
+            attn_output = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz, q_len, -1)*attn_output
+            attn_output = self.o_proj(attn_output)
         
         if not output_attentions:
             attn_weights = None
@@ -768,13 +712,11 @@ class LlamaFlashAttention2(LlamaAttention):
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
-        if self.actual_moe:
-            value_states, binary, router_logits = self.attention_moe_forward(hidden_states, self.v_proj)
-        else:
-            binary, router_logits = self.experts_module(hidden_states, return_binary=True)
-            binary_vector = binary.view(bsz,q_len,-1, self.head_dim)
-            value_states = self.v_proj(hidden_states)
-            value_states = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz,q_len,-1)*value_states
+
+        binary, router_logits = self.experts_module(hidden_states, return_binary=True)
+        binary_vector = binary.view(bsz,q_len,-1, self.head_dim)
+        value_states = self.v_proj(hidden_states)
+        value_states = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz,q_len,-1)*value_states
         # Flash attention requires the input to have the shape
         # batch_size x seq_length x head_dim x hidden_dim
         # therefore we just need to keep the original shape
@@ -832,11 +774,9 @@ class LlamaFlashAttention2(LlamaAttention):
         )
 
         attn_output = attn_output.reshape(bsz, q_len, -1).contiguous()
-        if self.actual_moe:
-            attn_output,_ = self.attention_moe_forward(attn_output, self.o_proj, transpose=True, provided_binary=binary)
-        else:
-            attn_output = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz, q_len, -1)*attn_output
-            attn_output = self.o_proj(attn_output)
+
+        attn_output = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz, q_len, -1)*attn_output
+        attn_output = self.o_proj(attn_output)
 
         if not output_attentions:
             attn_weights = None
@@ -982,13 +922,11 @@ class LlamaSdpaAttention(LlamaAttention):
 
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
-        if self.actual_moe:
-            value_states, binary, router_logits = self.attention_moe_forward(hidden_states, self.v_proj)
-        else:
-            binary, router_logits = self.experts_module(hidden_states, return_binary=True)
-            binary_vector = binary.view(bsz,q_len,-1, self.head_dim)
-            value_states = self.v_proj(hidden_states)
-            value_states = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz,q_len,-1)*value_states
+
+        binary, router_logits = self.experts_module(hidden_states, return_binary=True)
+        binary_vector = binary.view(bsz,q_len,-1, self.head_dim)
+        value_states = self.v_proj(hidden_states)
+        value_states = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz,q_len,-1)*value_states
 
         query_states = query_states.view(bsz, q_len, self.num_heads, -1).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, -1).transpose(1, 2)
@@ -1034,11 +972,9 @@ class LlamaSdpaAttention(LlamaAttention):
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(bsz, q_len, -1)
 
-        if self.actual_moe:
-            attn_output,_ = self.attention_moe_forward(attn_output, self.o_proj, transpose=True, provided_binary=binary)
-        else:
-            attn_output = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz, q_len, -1)*attn_output
-            attn_output = self.o_proj(attn_output)
+
+        attn_output = binary_vector.expand(-1, -1, self.num_key_value_heads, -1).reshape(bsz, q_len, -1)*attn_output
+        attn_output = self.o_proj(attn_output)
 
         return attn_output, None, past_key_value, router_logits
 
