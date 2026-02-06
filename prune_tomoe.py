@@ -164,7 +164,7 @@ def convert_to_moe_llama(model, truncated_union_list, hn, dynamic_experts, attn_
             mid_dim = int(mid_vector.sum().item())
             mid_index = (mid_vector == 1).nonzero().squeeze()
 
-            assert mid_dim == mid_index.sum()
+            assert mid_dim == mid_index.numel()
 
             gate_proj = torch.nn.Linear(in_features=m.config.hidden_size, out_features=mid_dim, bias=False).to(device)
             up_proj = torch.nn.Linear(in_features=m.config.hidden_size, out_features=mid_dim, bias=False).to(device)
