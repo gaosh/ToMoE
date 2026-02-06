@@ -286,11 +286,6 @@ class single_experts_module(nn.Module):
             binary_approx = gumbel_sigmoid_function(out_before_binary, offset=self.base, tau=self.T, sample=True).squeeze()
 
             binary = hard_sample(binary_approx)
-
-            if rnn_state.size(0) == self.experts+1:
-                constant_binary = binary[-1,:]
-                binary = binary[:-1,:]
-                binary = constant_binary + binary - (binary*constant_binary)
             # binary = binary_approx
 
             #width_mean = binary.sum(dim=-1).mean()
@@ -298,12 +293,12 @@ class single_experts_module(nn.Module):
                 width_mean = binary.sum(dim=-1).max()
                 #width_cover = torch.count_nonzero(binary.mean(0))
                 values, indices = torch.topk(binary_approx, k=int(width_mean.item()), dim=-1, largest=True, sorted=True)
-                width_cover = experts_union(binary)
                 # if self.attn_flag:
                 
                 self.experts_for_eval = torch.zeros_like(binary).to(torch.uint8)
                 for i in range(indices.size(0)):
                     self.experts_for_eval[i,indices[i]] = 1
+                width_cover = experts_union(self.experts_for_eval)
             else:
                 self.experts_for_eval = binary
                 #.to(torch.uint8)
