@@ -406,8 +406,8 @@ def train_hn(
 
 
             hard_out = hn_helper.get_attn_hard_out(unwrap_model(model), hard_out)
-            pair_attn_loss = hn_helper.pair_attn_loss(unwrap_model(model))
-            pair_loss += pair_attn_loss
+            # pair_attn_loss = hn_helper.pair_attn_loss(unwrap_model(model))
+            # pair_loss += pair_attn_loss
             load_balance_loss = hn_helper.load_balance_loss(unwrap_model(model))
 
             if hasattr(model_output, 'logits'):
