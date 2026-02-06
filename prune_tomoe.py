@@ -96,7 +96,7 @@ def convert_to_moe_llama(model, truncated_union_list, hn, dynamic_experts, attn_
             # eval_experts = hn[1].module_list[moe_index].experts_for_eval
 
             expert_weight = hn[1].module_list[moe_index].linear_router.weight.data
-            decoder_weight = hn[1].module_list[moe_index].linear_decoder.weight.data
+            decoder_weight = hn[1].module_list[moe_index].linear_decoder.weight.data[:m.head_dim,:]
             ln_weight = hn[1].module_list[moe_index].ln.weight.data
             ln_bias = hn[1].module_list[moe_index].ln.bias.data
 
