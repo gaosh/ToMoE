@@ -301,6 +301,9 @@ def main(
             #dynamic_width_list[index][1] = 2*int(dynamic_width_list[index][1])
             index += 1
     param_reg.count_current_params(width_list)
+
+    evaluate(moe_model, tokenizer, datasets="wikitext")
+
     moe_model.register_for_auto_class("AutoModelForCausalLM")
 
     print(output_dir)
