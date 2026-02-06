@@ -621,8 +621,8 @@ class help_functions_hn(nn.Module):
                     self.dynamic_head_list[att_head_idx][1] += m.qk_index.size(0)
                     if att_head_idx == 0 and attn_accumlate:
                         self.num_evaluate_batch+=1
-                    if att_head_idx == 1:
-                        print(m.dynamic_width)
+                    # if att_head_idx == 1:
+                    #     print(m.dynamic_width)
                     att_head_idx+=1
 
             if type(m).__name__ == 'virtual_dynamic_operation':

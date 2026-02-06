@@ -291,15 +291,16 @@ def main(
     dynamic_head_list = hn_helper.get_dynamic_head_list()
     print(dynamic_head_list)
     moe_modules = list(moe_model.modules())
-    index = 0
+    attn_indices = [i for i, w in enumerate(width_list) if isinstance(w, list)]
+    attn_idx = 0
     for layer_id in range(len(moe_modules)):
         m = moe_modules[layer_id]
         if type(m).__name__ == 'single_experts_module' and hasattr(m, 'top_k'):
-            m.top_k.copy_(int(dynamic_head_list[index][0]))
+            m.top_k.copy_(int(dynamic_head_list[attn_idx][0]))
 
-            width_list[index][0] = int(dynamic_head_list[index][0])
+            width_list[attn_indices[attn_idx]][0] = int(dynamic_head_list[attn_idx][0])
             #dynamic_width_list[index][1] = 2*int(dynamic_width_list[index][1])
-            index += 1
+            attn_idx += 1
     param_reg.count_current_params(width_list)
 
     evaluate(moe_model, tokenizer, datasets="wikitext")
