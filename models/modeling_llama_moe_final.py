@@ -199,6 +199,7 @@ class single_experts_module(nn.Module):
             self.register_buffer('experts_for_eval', torch.zeros(1, self.head_dim).to(torch.uint8))
             self.register_buffer('qk_index', torch.zeros(self.head_dim).to(torch.int64))
             self.register_buffer('rnn_state', torch.zeros(self.emb_dim))
+            self.register_buffer("top_k", torch.tensor(0.0))
 
             self.checked = False
             # self.rnn_state = torch.register_buffer()
@@ -234,7 +235,15 @@ class single_experts_module(nn.Module):
             out_before_binary = self.linear_decoder(F.gelu(self.ln(full_emb)))
 
             binary_approx = gumbel_sigmoid_function(logits=out_before_binary, tau=self.T, offset=self.base, sample=True, hard=False)
-            binary = hard_sample(binary_approx).view(batch_size, sequence_length, -1, self.head_dim)
+            #binary = hard_sample(binary_approx).view(batch_size, sequence_length, -1, self.head_dim)
+
+            if self.top_k == 0:
+                binary = hard_sample(binary_approx).view(batch_size, sequence_length, -1, self.head_dim)
+                width_max = binary.sum(-1).max()
+                self.dynamic_width = width_max
+            else:
+                width_max = self.top_k
+                binary = hard_topk(binary_approx, k=int(width_max))
             
             if return_binary:
                 return binary, binary_approx

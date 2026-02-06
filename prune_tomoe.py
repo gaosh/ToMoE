@@ -288,6 +288,18 @@ def main(
 
     evaluate(moe_model, tokenizer, datasets="wikitext")
 
+    dynamic_width_list = hn_helper.get_dynamic_width_list()
+    print(dynamic_width_list)
+    moe_modules = list(moe_model.modules())
+    for layer_id in range(len(moe_modules)):
+        m = moe_modules[layer_id]
+        if type(m).__name__ == 'single_experts_module':
+            m.top_k.copy_(int(dynamic_width_list[index][0]))
+
+            width_list[index][0] = int(dynamic_width_list[index][0])
+            #dynamic_width_list[index][1] = 2*int(dynamic_width_list[index][1])
+            index += 1
+    param_reg.count_current_params(width_list)
     moe_model.register_for_auto_class("AutoModelForCausalLM")
 
     print(output_dir)

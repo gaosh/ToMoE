@@ -617,8 +617,8 @@ class help_functions_hn(nn.Module):
             m = modules[layer_id]
             if type(m).__name__ == 'single_experts_module':
                 if m.attn_flag:
-                    self.dynamic_head_list[att_head_idx][0] += m.dynamic_width[0]
-                    self.dynamic_head_list[att_head_idx][1] += m.dynamic_width[1]
+                    self.dynamic_head_list[att_head_idx][0] += m.dynamic_width
+                    self.dynamic_head_list[att_head_idx][1] += m.qk_index.size(0)
                     if att_head_idx == 0 and attn_accumlate:
                         self.num_evaluate_batch+=1
                     att_head_idx+=1
