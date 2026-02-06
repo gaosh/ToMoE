@@ -264,7 +264,7 @@ class single_experts_module(nn.Module):
             device = rnn_state.get_device()
             if self.qk_static_flag:
                 output_constant = self.linear_decoder(F.gelu(self.ln(rnn_state.mean(dim=0).unsqueeze(0))))[:, self.head_dim:]
-                binary_approx_part2 = gumbel_sigmoid_function(output_constant, offset=self.base, T=self.T, sample=True).squeeze()
+                binary_approx_part2 = gumbel_sigmoid_function(output_constant, offset=self.base, tau=self.T, sample=True).squeeze()
                 binary_part2 = hard_sample(binary_approx_part2)
                 if binary_part2.sum() == 0:
                     idx = torch.argmax(binary_approx_part2)
