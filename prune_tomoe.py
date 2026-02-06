@@ -286,7 +286,7 @@ def main(
     torch.cuda.empty_cache()
     _ = sum(p.numel() for p in moe_model.parameters())
 
-    evaluate(moe_model, tokenizer, datasets="wikitext")
+    evaluate(moe_model, tokenizer, datasets="wikitext", hn_helper=hn_helper)
 
     dynamic_width_list = hn_helper.get_dynamic_width_list()
     print(dynamic_width_list)
