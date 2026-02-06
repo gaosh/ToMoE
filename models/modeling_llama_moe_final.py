@@ -240,7 +240,7 @@ class single_experts_module(nn.Module):
             if self.top_k == 0:
                 binary = hard_sample(binary_approx).view(batch_size, sequence_length, -1, self.head_dim)
                 width_max = binary.sum(-1).max()
-                print(width_max)
+                #print(width_max)
                 self.dynamic_width = width_max
             else:
                 width_max = self.top_k

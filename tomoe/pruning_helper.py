@@ -621,7 +621,10 @@ class help_functions_hn(nn.Module):
                     self.dynamic_head_list[att_head_idx][1] += m.qk_index.size(0)
                     if att_head_idx == 0 and attn_accumlate:
                         self.num_evaluate_batch+=1
+                    if att_head_idx == 1:
+                        print(m.dydynamic_width)
                     att_head_idx+=1
+
             if type(m).__name__ == 'virtual_dynamic_operation':
 
                 seq_logits = m.router_logits.max(-1)[0].squeeze().to(self.router_logits_stat.dtype).cpu()
