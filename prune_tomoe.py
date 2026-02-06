@@ -294,7 +294,7 @@ def main(
     index = 0
     for layer_id in range(len(moe_modules)):
         m = moe_modules[layer_id]
-        if type(m).__name__ == 'single_experts_module':
+        if type(m).__name__ == 'single_experts_module' and hasattr(m, 'top_k'):
             m.top_k.copy_(int(dynamic_width_list[index][0]))
 
             width_list[index][0] = int(dynamic_width_list[index][0])
