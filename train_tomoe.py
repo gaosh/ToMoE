@@ -109,6 +109,7 @@ def main(
     use_fsdp: bool = True,
     use_ddp:bool = False,
     use_bf16: bool = False,
+    use_fp32: bool = False,
     save_interval: int = 5000,
    
     num_workers: int = 2,
@@ -133,7 +134,9 @@ def main(
     #     use_fsdp = False
     #     print('[WARNING] FSDP is disabled since there is only 1 GPU')
     dist.init_process_group("nccl", rank=env.global_rank, world_size=env.world_size, timeout=datetime.timedelta(seconds=3600*5))
-    if use_bf16:
+    if use_fp32:
+        data_type = torch.float32
+    elif use_bf16:
         data_type = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     else:
         data_type = torch.float16
@@ -309,6 +312,7 @@ def main(
         hn_lr=hn_lr,
         fsdp=use_fsdp,
         save_interval=save_interval,
+        data_type=data_type,
 
         kd_loss=kd_loss,
         )
@@ -337,17 +341,17 @@ def train_hn(
 
     save_interval=5000,
     kd_loss = True,
+    data_type: torch.dtype = torch.float16,
 
 
 ) -> None:
-    data_type = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     device_id = env.local_rank
     iter_num = start_iter
     if fsdp:
         from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
-        scaler = ShardedGradScaler()
+        scaler = ShardedGradScaler(enabled=(data_type != torch.float32))
     else:
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.cuda.amp.GradScaler(enabled=(data_type != torch.float32))
 
     optimizer = torch.optim.AdamW([{'params':hn.parameters(), 'initial_lr':hn_lr}], lr=hn_lr, weight_decay=0.05,betas=(0.9, 0.999))
 
@@ -404,7 +408,7 @@ def train_hn(
 
 
 
-        with autocast(device_type='cuda', dtype=data_type):
+        with autocast(device_type='cuda', dtype=data_type, enabled=(data_type != torch.float32)):
 
             if kd_loss:
                 with torch.no_grad():
