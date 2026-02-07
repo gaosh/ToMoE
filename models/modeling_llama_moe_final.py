@@ -243,7 +243,8 @@ class single_experts_module(nn.Module):
                 #print(width_max)
                 self.dynamic_width = width_max
             else:
-                binary = hard_topk(binary_approx)
+                width_max = int(self.top_k)
+                binary = hard_topk(binary_approx, k=width_max)
                 # binary = hard_sample(binary_approx)
                 # width_max = int(self.top_k)
                 # # scores used to decide which dims to keep
