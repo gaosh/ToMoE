@@ -254,6 +254,7 @@ def main(
 
             if env.world_size>1:
                 hn_helper.set_expert_modules(unwrap_model(model), experts_list.module_list)
+                experts_list.module_list.float()
     else:
         model = model.to(device_id) #.to(torch.bfloat16)
         if use_fsdp:
@@ -270,9 +271,11 @@ def main(
 
             if env.world_size>1:
                 hn_helper.set_expert_modules(unwrap_model(model), experts_list.module_list)
+                experts_list.module_list.float()
 
     if env.world_size ==1:
         hn_helper.set_expert_modules(unwrap_model(model), experts_list.module_list)
+        experts_list.module_list.float()
 
 
             

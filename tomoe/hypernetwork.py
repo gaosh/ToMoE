@@ -223,34 +223,39 @@ class single_experts_module(nn.Module):
         self.qk_static_flag = qk_static_flag
         self.width = None
     def forward(self, x=None, rnn_state=None):
-        #self.rnn_state = rnn_state.mean(dim=0)
-        router_logits = None
-        if self.attn_flag:
-            out = self.linear_router(x)
-           
-            #num_tokens = x.size(1)
-            batch_size, num_tokens, _ = x.shape  # x: (B, T, emb_dim)
-            routed_emb = out + rnn_state.mean(dim=0)
+        # Force FP32 compute for expert routing regardless of outer autocast
+        device_type = x.device.type if x is not None else "cuda"
+        autocast_enabled = device_type == "cuda"
+        with torch.autocast(device_type=device_type, enabled=False):
+            x = x.float() if x is not None else x
+            rnn_state = rnn_state.float() if rnn_state is not None else rnn_state
+
+            router_logits = None
+            if self.attn_flag:
+                out = self.linear_router(x)
+               
+                batch_size, num_tokens, _ = x.shape  # x: (B, T, emb_dim)
+                routed_emb = out + rnn_state.mean(dim=0)
+                
+                output_dynamic = self.linear_decoder(F.gelu(self.ln(routed_emb)))[... , :self.head_dim]
+                output_constant = self.linear_decoder(F.gelu(self.ln(rnn_state.mean(dim=0).unsqueeze(0))))[..., self.head_dim:]
+                output_constant = output_constant.expand(batch_size, num_tokens, -1)
+
+                out_before_binary = torch.cat([output_dynamic, output_constant], dim=-1)
+                if output_dynamic.ndim==2:
+                    output_dynamic = output_dynamic.unsqueeze(0)
+
+                binary = gumbel_sigmoid_function(logits=out_before_binary, tau=self.T, offset=self.base, hard=True, sample=True)
+                self.binary = binary
             
-            output_dynamic = self.linear_decoder(F.gelu(self.ln(routed_emb)))[... , :self.head_dim]  # Shape: [batch_size, head_dim + int(mlp_dim/2)]
-            output_constant = self.linear_decoder(F.gelu(self.ln(rnn_state.mean(dim=0).unsqueeze(0))))[..., self.head_dim:]
-            output_constant = output_constant.expand(batch_size, num_tokens, -1)
+            else:
+                out = self.linear_router(x)
+                batch_size, num_tokens, _ = x.shape  # x: (B, T, emb_dim)
+                router_logits = gumbel_softmax(out, T=self.T, hard_sample=True)
 
-            out_before_binary = torch.cat([output_dynamic, output_constant], dim=-1)
-            if output_dynamic.ndim==2:
-                output_dynamic = output_dynamic.unsqueeze(0)
-
-            binary = gumbel_sigmoid_function(logits=out_before_binary, tau=self.T, offset=self.base, hard=True, sample=True)
-            self.binary = binary
-        
-        else:
-            out = self.linear_router(x)
-            batch_size, num_tokens, _ = x.shape  # x: (B, T, emb_dim)
-            router_logits = gumbel_softmax(out, T=self.T, hard_sample=True)
-
-            routed_emb = torch.matmul(router_logits, rnn_state)
-            out_before_binary = self.linear_decoder(F.gelu(self.ln(routed_emb)))
-            binary = gumbel_sigmoid_function(logits=out_before_binary, tau=self.T, offset=self.base, hard=True, sample=True)
+                routed_emb = torch.matmul(router_logits, rnn_state)
+                out_before_binary = self.linear_decoder(F.gelu(self.ln(routed_emb)))
+                binary = gumbel_sigmoid_function(logits=out_before_binary, tau=self.T, offset=self.base, hard=True, sample=True)
         
         return binary, router_logits
 
