@@ -243,7 +243,7 @@ class single_experts_module(nn.Module):
                 #print(width_max)
                 self.dynamic_width = width_max
             else:
-                binary = hard_sample(binary_approx).view(batch_size, sequence_length, -1, self.head_dim)
+                binary = hard_sample(binary_approx)
                 width_max = int(self.top_k)
                 # scores used to decide which dims to keep
                 scores = binary_approx.view(batch_size, sequence_length, self.head_dim)
@@ -272,7 +272,7 @@ class single_experts_module(nn.Module):
                     fallback.scatter_(-1, max_idx, 1.0)
 
                     binary = torch.where(zero_mask, fallback, binary)
-            
+                binary = binary.view(batch_size, sequence_length, -1, self.head_dim)
             if return_binary:
                 return binary, binary_approx
             else:
