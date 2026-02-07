@@ -245,7 +245,9 @@ class single_experts_module(nn.Module):
             else:
                 width_max = int(self.top_k)
                 binary = hard_topk(binary_approx, k=width_max).view(batch_size, sequence_length, -1, self.head_dim)
-                #print(binary.sum(-1).max())
+                binary_reference = hard_sample(binary_approx).view(batch_size, sequence_length, -1, self.head_dim)
+                
+                print((binary - binary_reference).abs().sum(dim=-1).mean())
             
             if return_binary:
                 return binary, binary_approx
