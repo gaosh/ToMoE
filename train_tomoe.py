@@ -54,15 +54,20 @@ def kl_div_loss_with_ignore_index(predictions, targets, labels, ignore_index=-10
     if mask.sum() == 0:
         return torch.zeros((), device=device, dtype=predictions.dtype)
 
+    # compute in log-space for numerical stability
     student_logprob = log_softmax_fp32(predictions, dim=-1)
-    teacher_prob = softmax_fp32(targets, dim=-1).detach()
+    teacher_logprob = log_softmax_fp32(targets, dim=-1).detach()
 
-    # forward KL per token: sum_q q * (log q - log p)
-    kl_per_token = torch.sum(teacher_prob * (torch.log(teacher_prob + 1e-8) - student_logprob), dim=-1)
+    # per-token forward KL, then mask
+    kl_per_token = F.kl_div(
+        student_logprob,
+        teacher_logprob,
+        log_target=True,
+        reduction="none",
+    ).sum(-1)
     kl_per_token = kl_per_token.view(-1)
 
-    masked_kl = kl_per_token[mask]
-    return masked_kl.mean()
+    return kl_per_token[mask].mean()
 
 class ForwardKLLoss(torch.nn.Module):
   def __init__(self, ignore_index: int = -100):
@@ -371,6 +376,7 @@ def train_hn(
     for params in hn.parameters():
         params.requires_grad = True
     hn.train()
+    hn = hn.float()
 
     env.print_master(hn)
 
@@ -400,9 +406,9 @@ def train_hn(
 
                     hn_helper.set_gate_status(unwrap_model(model), True)    
 
-            pesudo_x = torch.randn(1).to(device_id)
-
-            vectors, pair_loss, hard_out  = hn(pesudo_x)
+            pesudo_x = torch.randn(1, device=device_id, dtype=torch.float32)
+            with autocast(device_type="cuda", enabled=False):
+                vectors, pair_loss, hard_out = hn(pesudo_x)
 
             hn_helper.set_gate_vectors(unwrap_model(model),vectors)
 
