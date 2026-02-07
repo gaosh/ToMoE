@@ -426,12 +426,12 @@ def train_hn(
                 #loss = model_output.loss
             else:
                 logits = model_output
-
-            if kd_loss:
-                #loss = 8 * kl_div_loss_with_ignore_index(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
-                loss = 2 * kd_loss_fn(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1))
-            else:
-                loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
+            with autocast(device_type="cuda", enabled=False):
+                if kd_loss:
+                    #loss = 8 * kl_div_loss_with_ignore_index(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
+                    loss = 2 * kd_loss_fn(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1))
+                else:
+                    loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
 
             reg_loss = param_reg(hard_out)
 
