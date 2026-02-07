@@ -244,7 +244,7 @@ class single_experts_module(nn.Module):
                 self.dynamic_width = width_max
             else:
                 width_max = int(self.top_k)
-                binary = hard_topk(binary_approx, k=width_max)
+                binary = hard_topk(binary_approx, k=width_max).view(batch_size, sequence_length, -1, self.head_dim)
                 #print(binary.sum(-1).max())
             
             if return_binary:
