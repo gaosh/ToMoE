@@ -49,17 +49,20 @@ def kl_div_loss_with_ignore_index(predictions, targets, labels, ignore_index=-10
     - loss: KL divergence loss with ignored indices.
     """
 
-    mask = (labels != ignore_index).to(predictions.get_device())
-    mask_flat = mask.view(-1)
+    device = predictions.device
+    mask = (labels != ignore_index).to(device).view(-1)
+    if mask.sum() == 0:
+        return torch.zeros((), device=device, dtype=predictions.dtype)
 
-    valid_log_probs = predictions[mask_flat]
-    valid_target_probs = targets[mask_flat]
+    student_logprob = log_softmax_fp32(predictions, dim=-1)
+    teacher_prob = softmax_fp32(targets, dim=-1).detach()
 
-    loss = F.kl_div(
-        log_softmax_fp32(valid_log_probs, dim=-1,),
-        softmax_fp32(valid_target_probs, dim=-1,).detach(),
-        reduction="batchmean",)
-    return loss
+    # forward KL per token: sum_q q * (log q - log p)
+    kl_per_token = torch.sum(teacher_prob * (torch.log(teacher_prob + 1e-8) - student_logprob), dim=-1)
+    kl_per_token = kl_per_token.view(-1)
+
+    masked_kl = kl_per_token[mask]
+    return masked_kl.mean()
 
 class ForwardKLLoss(torch.nn.Module):
   def __init__(self, ignore_index: int = -100):
@@ -419,8 +422,8 @@ def train_hn(
                 logits = model_output
 
             if kd_loss:
-                #loss = 16 * kl_div_loss_with_ignore_index(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
-                loss = 2 * kd_loss_fn(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1))
+                loss = 16 * kl_div_loss_with_ignore_index(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
+                #loss = 2 * kd_loss_fn(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1))
             else:
                 loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
 
