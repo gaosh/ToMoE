@@ -617,7 +617,16 @@ class help_functions_hn(nn.Module):
             m = modules[layer_id]
             if type(m).__name__ == 'single_experts_module':
                 if m.attn_flag:
-                    self.dynamic_head_list[att_head_idx][0] += m.dynamic_width
+                    #self.dynamic_head_list[att_head_idx][0] = max(m.dynamic_width, self.dynamic_head_list[att_head_idx][0])
+                    
+                    current_val = (
+                        self.dynamic_head_list[att_head_idx][0].item()
+                        if torch.is_tensor(self.dynamic_head_list[att_head_idx][0])
+                        else self.dynamic_head_list[att_head_idx][0]
+                    )
+                    new_val = m.dynamic_width.item() if torch.is_tensor(m.dynamic_width) else m.dynamic_width
+                    self.dynamic_head_list[att_head_idx][0] = max(new_val, current_val)
+
                     self.dynamic_head_list[att_head_idx][1] += m.qk_index.size(0)
                     if att_head_idx == 0 and attn_accumlate:
                         self.num_evaluate_batch+=1
@@ -643,7 +652,7 @@ class help_functions_hn(nn.Module):
     def get_router_logits(self,):
         return self.router_logits_stat/self.num_evaluate_batch
     def get_dynamic_head_list(self, ):
-        return [[self.dynamic_head_list[ind][0]/self.num_evaluate_batch, self.dynamic_head_list[ind][1]/self.num_evaluate_batch] for ind in range(len(self.dynamic_head_list))]
+        return [[self.dynamic_head_list[ind][0], self.dynamic_head_list[ind][1]/self.num_evaluate_batch] for ind in range(len(self.dynamic_head_list))]
     def get_dynamic_width_list(self, ):
         final_list = self.width_list
         for i in range(len(final_list)):
