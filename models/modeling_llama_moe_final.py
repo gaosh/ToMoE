@@ -243,35 +243,36 @@ class single_experts_module(nn.Module):
                 #print(width_max)
                 self.dynamic_width = width_max
             else:
-                binary = hard_sample(binary_approx)
-                width_max = int(self.top_k)
-                # scores used to decide which dims to keep
-                scores = binary_approx.view(batch_size, sequence_length, self.head_dim)
+                binary = hard_topk(binary_approx)
+                # binary = hard_sample(binary_approx)
+                # width_max = int(self.top_k)
+                # # scores used to decide which dims to keep
+                # scores = binary_approx.view(batch_size, sequence_length, self.head_dim)
 
-                # get top-k indices per (B,T)
-                topk_idx = scores.topk(width_max, dim=-1).indices  # (B,T,k)
+                # # get top-k indices per (B,T)
+                # topk_idx = scores.topk(width_max, dim=-1).indices  # (B,T,k)
 
-                # build top-k mask
-                topk_mask = torch.zeros_like(binary_approx)
-                topk_mask.scatter_(-1, topk_idx, 1.0)
+                # # build top-k mask
+                # topk_mask = torch.zeros_like(binary_approx)
+                # topk_mask.scatter_(-1, topk_idx, 1.0)
 
-                # if binary.sum > k → replace by topk_mask
-                binary = torch.where(
-                    (binary.sum(dim=-1, keepdim=True) > width_max),
-                    topk_mask,
-                    binary
-                )
+                # # if binary.sum > k → replace by topk_mask
+                # binary = torch.where(
+                #     (binary.sum(dim=-1, keepdim=True) > width_max),
+                #     topk_mask,
+                #     binary
+                # )
 
-                # ---- Case 2: zero active dims → force one dim on ----
-                zero_mask = (binary.sum(dim=-1, keepdim=True) == 0)
+                # # ---- Case 2: zero active dims → force one dim on ----
+                # zero_mask = (binary.sum(dim=-1, keepdim=True) == 0)
 
-                if zero_mask.any():
-                    # pick the max-logit dim
-                    max_idx = binary_approx.view(batch_size, sequence_length, self.head_dim).argmax(dim=-1, keepdim=True)
-                    fallback = torch.zeros_like(binary)
-                    fallback.scatter_(-1, max_idx, 1.0)
+                # if zero_mask.any():
+                #     # pick the max-logit dim
+                #     max_idx = binary_approx.view(batch_size, sequence_length, self.head_dim).argmax(dim=-1, keepdim=True)
+                #     fallback = torch.zeros_like(binary)
+                #     fallback.scatter_(-1, max_idx, 1.0)
 
-                    binary = torch.where(zero_mask, fallback, binary)
+                #     binary = torch.where(zero_mask, fallback, binary)
                 binary = binary.view(batch_size, sequence_length, -1, self.head_dim)
             if return_binary:
                 return binary, binary_approx
