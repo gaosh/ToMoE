@@ -186,9 +186,10 @@ def main(
 
         from models.modeling_llama_dpmoe import LlamaForCausalLM, LlamaDecoderLayer
         # model_dtype = torch.bfloat16 if use_bf16 else torch.float32
+        attn_impl = "flash_attention_2" if data_type in (torch.float16, torch.bfloat16) else "sdpa"
         model = LlamaForCausalLM.from_pretrained(
             hf_model,
-            attn_implementation="flash_attention_2",
+            attn_implementation=attn_impl,
             torch_dtype=data_type,
         )
         tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
