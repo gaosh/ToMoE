@@ -248,6 +248,8 @@ class single_experts_module(nn.Module):
                 binary_reference = hard_sample(binary_approx).view(batch_size, sequence_length, -1, self.head_dim)
                 
                 print((binary - binary_reference).abs().sum(dim=-1).mean())
+                print(width_max)
+                print(binary_reference.sum(-1).max())
             
             if return_binary:
                 return binary, binary_approx
