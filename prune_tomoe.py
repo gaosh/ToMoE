@@ -72,6 +72,40 @@ def load_eval_data(dataset_name: str) -> str:
         raise ValueError("invalid dataset name (wikitext, ptb, c4 are allowed)")
     return testdata
 
+def write_cfgs(output_dir, vector, hf_model):
+    import os
+
+    supported = {
+        "dfurman/LLaMA-13B",
+        "meta-llama/Llama-2-7b-hf",
+        "meta-llama/Llama-2-13b-hf",
+        "lmsys/vicuna-7b-v1.3",
+        "meta-llama/Meta-Llama-3-8B",
+    }
+    if hf_model not in supported:
+        raise ValueError(f"write_cfgs: unsupported hf_model: {hf_model}")
+
+    target_path = os.path.join(output_dir, "modeling_llama_moe_final.py")
+    if not os.path.exists(target_path):
+        raise FileNotFoundError(f"write_cfgs: missing file: {target_path}")
+
+    with open(target_path, "r", encoding="utf-8") as f:
+        lines = f.read().splitlines()
+
+    new_line = f"        self.cfgs = {vector}"
+    replaced = False
+    for i, line in enumerate(lines):
+        if "self.cfgs =" in line:
+            lines[i] = new_line
+            replaced = True
+            break
+
+    if not replaced:
+        raise ValueError("write_cfgs: did not find 'self.cfgs =' line to replace")
+
+    with open(target_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+        
 
 def convert_to_moe_llama(model, truncated_union_list, hn, dynamic_experts, attn_prune=False):
     cfgs = []
@@ -314,7 +348,7 @@ def main(
 
     moe_model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
-
+    write_cfgs(output_dir, width_union_cfgs, hf_model)
 
 if __name__ == "__main__":
     from jsonargparse import CLI
