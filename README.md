@@ -59,9 +59,6 @@ accelerate launch --main_process_port 12323 --num_processes 1 \
 - `utils/`: Training/runtime helpers.
 - `data/`: Dataset utilities.
 
-## Notes
-- The pruning pipeline expects a trained hypernetwork checkpoint.
-- For best results, train and prune with the same base model family.
 
 ## Citation
 If you found this repo useful, please cite:
