@@ -251,12 +251,12 @@ class single_experts_module(nn.Module):
                 topk_idx = scores.topk(width_max, dim=-1).indices  # (B,T,k)
 
                 # build top-k mask
-                topk_mask = torch.zeros_like(binary)
+                topk_mask = torch.zeros_like(binary_approx)
                 topk_mask.scatter_(-1, topk_idx, 1.0)
 
                 # if binary.sum > k → replace by topk_mask
                 binary = torch.where(
-                    (binary.sum(dim=-1, keepdim=True) > k),
+                    (binary.sum(dim=-1, keepdim=True) > width_max),
                     topk_mask,
                     binary
                 )
