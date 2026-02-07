@@ -9,21 +9,7 @@ This repo provides:
 - A conversion script to turn dense LLaMA models into pruned MoE models.
 - Model definitions for the pruned MoE variants.
 
-## Requirements
-Core dependencies:
-- `torch`
-- `transformers`
-- `datasets`
-- `tqdm`
-- `jsonargparse`
-
-Training/eval utilities:
-- `accelerate` (for `lm_eval` zero-shot evaluation)
-- `lm-eval` (lm-eval-harness)
-- `bitsandbytes` (optional, if enabled)
-
-Optional:
-- `flash-attn` (for FlashAttention 2; used when dtype is fp16/bf16)
+Dependencies are specified in `environment.yml`.
 
 ## Key scripts
 - `train_tomoe.py`: Train the hypernetwork.
@@ -57,13 +43,14 @@ python prune_tomoe.py \
 ```
 
 ## Example: Zero-Shot Evaluation
+Please refer to https://github.com/EleutherAI/lm-evaluation-harness
 ```bash
 accelerate launch --main_process_port 12323 --num_processes 1 \
     -m lm_eval --model hf \
     --model_args pretrained=/path/to/tomoe_model,dtype=bfloat16,trust_remote_code=true \
     --tasks hellaswag,arc_easy,arc_challenge,piqa,winogrande \
     --device cuda:0 \
-    --batch_size 128
+    --batch_size 32
 ```
 
 ## Repo layout
