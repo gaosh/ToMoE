@@ -193,7 +193,7 @@ class single_experts_module(nn.Module):
 
             #self.linear_router = nn.Linear(self.model_dim, self.experts, bias=False)
             self.linear_router = nn.Linear(self.model_dim, self.emb_dim, bias=False) 
-            self.linear_decoder = nn.Linear(self.emb_dim, mlp_dim, bias=True)
+            self.linear_decoder = nn.Linear(self.emb_dim, mlp_dim, bias=False)
             self.ln = nn.LayerNorm([self.emb_dim])
 
             self.register_buffer('experts_for_eval', torch.zeros(1, self.head_dim).to(torch.uint8))
