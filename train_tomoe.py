@@ -69,9 +69,9 @@ class ForwardKLLoss(torch.nn.Module):
   def forward(self, student_logits, teacher_logits, labels) -> torch.Tensor:
     # Implementation from https://github.com/jongwooko/distillm
     # Computes the softmax of the teacher logits
-    teacher_prob = softmax_fp32(teacher_logits, dim=-1, dtype=torch.float32).detach()
+    teacher_prob = softmax_fp32(teacher_logits, dim=-1).detach()
     # Computes the student log softmax probabilities
-    student_logprob = log_softmax_fp32(student_logits, dim=-1, dtype=torch.float32)
+    student_logprob = log_softmax_fp32(student_logits, dim=-1,)
     # Computes the forward KL divergence
     prod_probs = teacher_prob * student_logprob
     # Compute the sum
