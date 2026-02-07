@@ -69,9 +69,9 @@ class ForwardKLLoss(torch.nn.Module):
   def forward(self, student_logits, teacher_logits, labels) -> torch.Tensor:
     # Implementation from https://github.com/jongwooko/distillm
     # Computes the softmax of the teacher logits
-    teacher_prob = F.softmax(teacher_logits, dim=-1, dtype=torch.float32).detach()
+    teacher_prob = softmax_fp32(teacher_logits, dim=-1, dtype=torch.float32).detach()
     # Computes the student log softmax probabilities
-    student_logprob = F.log_softmax(student_logits, dim=-1, dtype=torch.float32)
+    student_logprob = log_softmax_fp32(student_logits, dim=-1, dtype=torch.float32)
     # Computes the forward KL divergence
     prod_probs = teacher_prob * student_logprob
     # Compute the sum
@@ -355,6 +355,8 @@ def train_hn(
 
     else:                               # single GPU / plain module
         state_dict_hn = hn.state_dict()
+    if kd_loss:
+        kd_loss_fn = ForwardKLLoss(ignore_index=ignored_token)
 
     torch.save(state_dict_hn, hn_path)
         
@@ -417,7 +419,8 @@ def train_hn(
                 logits = model_output
 
             if kd_loss:
-                loss = 16 * kl_div_loss_with_ignore_index(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
+                #loss = 16 * kl_div_loss_with_ignore_index(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
+                loss = 2 * kd_loss_fn(logits.view(-1, logits.size(-1)), teacher_logits.view(-1, teacher_logits.size(-1)), targets.view(-1))
             else:
                 loss = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=ignored_token)
 
