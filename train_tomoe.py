@@ -133,7 +133,10 @@ def main(
     #     use_fsdp = False
     #     print('[WARNING] FSDP is disabled since there is only 1 GPU')
     dist.init_process_group("nccl", rank=env.global_rank, world_size=env.world_size, timeout=datetime.timedelta(seconds=3600*5))
-    data_type = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    if use_bf16:
+        data_type = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    else:
+        data_type = torch.float16
     # parameter processing
     if out_dir is None:
         dir_name = exp_name + '_' + hf_model
@@ -179,7 +182,12 @@ def main(
     if hf_model == "meta-llama/Llama-2-7b-hf" or hf_model == "meta-llama/Llama-2-13b-hf" or hf_model == 'meta-llama/Meta-Llama-3-8B':
 
         from models.modeling_llama_dpmoe import LlamaForCausalLM, LlamaDecoderLayer
-        model = LlamaForCausalLM.from_pretrained(hf_model, attn_implementation = "flash_attention_2",torch_dtype=torch.bfloat16,)
+        # model_dtype = torch.bfloat16 if use_bf16 else torch.float32
+        model = LlamaForCausalLM.from_pretrained(
+            hf_model,
+            attn_implementation="flash_attention_2",
+            torch_dtype=data_type,
+        )
         tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
         ignored_token = tokenizer.bos_token_id
         PruneLlamaDecoderLayer = LlamaDecoderLayer
