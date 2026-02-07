@@ -246,10 +246,12 @@ class single_experts_module(nn.Module):
                 width_max = int(self.top_k)
                 binary = hard_topk(binary_approx, k=width_max).view(batch_size, sequence_length, -1, self.head_dim)
                 binary_reference = hard_sample(binary_approx).view(batch_size, sequence_length, -1, self.head_dim)
-                
-                print((binary - binary_reference).abs().sum(dim=-1).mean())
-                print(width_max)
+                print("binary_approx.shape:", binary_approx.shape)
+                print("topk.shape:", binary.shape)
+                print("k:", width_max)
                 print(binary_reference.sum(-1).max())
+
+                print((binary - binary_reference).abs().sum(dim=-1).mean())
             
             if return_binary:
                 return binary, binary_approx
