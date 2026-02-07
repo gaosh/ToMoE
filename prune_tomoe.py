@@ -287,6 +287,7 @@ def main(
     _ = sum(p.numel() for p in moe_model.parameters())
 
     evaluate(moe_model, tokenizer, datasets="wikitext", hn_helper=hn_helper)
+    evaluate(moe_model, tokenizer, datasets="wikitext")
 
     dynamic_head_list = hn_helper.get_dynamic_head_list()
     print(dynamic_head_list)
