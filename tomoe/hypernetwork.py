@@ -389,7 +389,7 @@ class virtual_dynamic_operation(nn.Module):
 
             return outputs
         else:
-            return torch.ones(self.middle_dim).to(input.get_device())
+            return torch.ones(self.middle_dim, device=input.device, dtype=input.dtype)
     
     def set_rnn_state(self, rnn_state):
         self.rnn_state = torch.zeros(rnn_state.size(0), self.emb_dim)
@@ -468,6 +468,7 @@ class SingleGatedAttnModule(nn.Module):
 
         z = F.gelu(self.ln(z))
         gate = torch.sigmoid(self.gate_up(z))
+        self.last_gate = gate
         return gate.view(batch_size, sequence_length, self.n_heads, self.head_dim)
 
 
@@ -479,6 +480,7 @@ class GatedAttList(nn.Module):
         n_heads: int,
         head_dim: int,
         rank: int = 128,
+        init_bias: float = 3.0,
     ):
         super().__init__()
         self.modules_list = nn.ModuleList(
@@ -488,6 +490,7 @@ class GatedAttList(nn.Module):
                     n_heads=n_heads,
                     head_dim=head_dim,
                     rank=rank,
+                    init_bias=init_bias,
                 )
                 for _ in range(num_layers)
             ]
