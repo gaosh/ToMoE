@@ -1,6 +1,7 @@
 import datetime
 import os
 import time
+from collections import OrderedDict
 from functools import partial
 
 import torch
@@ -73,13 +74,137 @@ def attach_gated_attention_modules(model, gate_rank=128, gate_init_bias=3.0):
     return attached
 
 
+def _parse_moe_layers(moe_layers, num_layers):
+    if moe_layers is None or moe_layers == "all":
+        return set(range(num_layers))
+    if isinstance(moe_layers, str):
+        return {int(item) for item in moe_layers.split(",") if item.strip()}
+    return {int(item) for item in moe_layers}
+
+
+def construct_tomoe_mlp_layers(model, num_experts=8, moe_layers="all", expert_init="balanced", top_k=1):
+    if top_k != 1:
+        raise ValueError("The existing ToMoE MLP router supports top_k=1 only.")
+    if expert_init != "balanced":
+        raise ValueError("Only expert_init='balanced' is implemented by the local ToMoE construction path.")
+
+    from models.modeling_llama_moe_final import single_experts_module
+
+    layers = unwrap_model(model).model.layers
+    target_layers = _parse_moe_layers(moe_layers, len(layers))
+    converted = []
+    for layer_idx, layer in enumerate(layers):
+        if layer_idx not in target_layers:
+            continue
+
+        mlp = layer.mlp
+        expert_module = single_experts_module(
+            mlp.gate_proj.out_features,
+            mlp.config.hidden_size,
+            experts=num_experts,
+        )
+        expert_module.experts_for_eval.zero_()
+        expert_indices = torch.arange(mlp.gate_proj.out_features)
+        chunks = torch.chunk(expert_indices, num_experts)
+        for expert_idx, chunk in enumerate(chunks):
+            if chunk.numel() == 0:
+                chunk = expert_indices[-1:].clone()
+            expert_module.experts_for_eval[expert_idx, chunk] = 1
+
+        mlp.experts_module = expert_module.to(mlp.gate_proj.weight.device)
+        mlp.actual_moe = True
+        mlp.intermediate_size = mlp.gate_proj.out_features
+        converted.append(layer_idx)
+
+    if not converted:
+        raise RuntimeError("No MLP layers were converted to ToMoE.")
+    unwrap_model(model).tomoe_moe_config = {
+        "num_experts": num_experts,
+        "top_k": top_k,
+        "expert_init": expert_init,
+        "moe_layers": sorted(converted),
+    }
+    return converted
+
+
+def construct_tomoe_from_hypernetwork(model, hn_path, num_experts=8):
+    from prune_tomoe import convert_to_moe_llama
+    from tomoe.hypernetwork import experts_module_list, hypernetwork
+    from tomoe.pruning_helper import help_functions_hn
+
+    layers = unwrap_model(model).model.layers
+    structures = []
+    for layer in layers:
+        structures.append(layer.self_attn.head_dim)
+        structures.append(layer.mlp.gate_proj.out_features)
+    first_attn = layers[0].self_attn
+    model_dim = first_attn.hidden_size
+    head_dim = first_attn.head_dim
+    num_kv_heads = first_attn.num_key_value_heads
+
+    rnn = hypernetwork(t_structures=structures, experts=num_experts)
+    experts_list = experts_module_list(
+        structures=structures,
+        model_dim=model_dim,
+        head_dim=head_dim,
+        experts=num_experts,
+        num_kv_heads=num_kv_heads,
+    )
+    hn = torch.nn.ModuleList([rnn, experts_list])
+
+    hn_state_dict = torch.load(hn_path, map_location="cpu")
+    cleaned_state_dict = OrderedDict()
+    for key, value in hn_state_dict.items():
+        name = key
+        if name.startswith("module."):
+            name = name.replace("module.", "", 1)
+        if name.startswith("model_list."):
+            name = name.replace("model_list.", "", 1)
+        cleaned_state_dict[name] = value
+    hn.load_state_dict(cleaned_state_dict, strict=False)
+    hn.eval()
+
+    hn_helper = help_functions_hn(structures)
+    with torch.no_grad():
+        vectors = hn[0]()
+        _, width_union_list = hn_helper.prepare_for_eval(
+            hn[1].module_list,
+            vectors,
+            non_uniform=True,
+            return_vector_union=True,
+        )
+    truncated_union_list = [
+        item for item in width_union_list
+        if not isinstance(item, int) and item.sum().item() != 0
+    ]
+    model = convert_to_moe_llama(
+        model,
+        truncated_union_list,
+        hn,
+        num_experts,
+        attn_prune=False,
+    )
+    converted = [
+        idx for idx, layer in enumerate(unwrap_model(model).model.layers)
+        if getattr(layer.mlp, "experts_module", None) is not None
+    ]
+    unwrap_model(model).tomoe_moe_config = {
+        "num_experts": num_experts,
+        "top_k": 1,
+        "expert_init": "hypernetwork",
+        "hn_path": hn_path,
+        "moe_layers": converted,
+    }
+    return model, converted
+
+
 def set_gated_attention_status(model, enabled=True):
     for module in model.modules():
         if hasattr(module, "use_gated_attn"):
             module.use_gated_attn = enabled
 
 
-def freeze_for_gated_attention(model, freeze_base_model=True, train_gate_only=True):
+def freeze_for_joint_training(model, freeze_base_model=True, train_gate_only=False):
     if freeze_base_model or train_gate_only:
         for param in model.parameters():
             param.requires_grad = False
@@ -93,7 +218,16 @@ def freeze_for_gated_attention(model, freeze_base_model=True, train_gate_only=Tr
 
     if gate_param_count == 0:
         raise RuntimeError("No gated-attention parameters were enabled for training.")
-    return gate_param_count
+
+    moe_param_count = 0
+    if not train_gate_only:
+        for module in model.modules():
+            if type(module).__name__ == "single_experts_module":
+                for param in module.parameters():
+                    param.requires_grad = True
+                    moe_param_count += param.numel()
+
+    return gate_param_count, moe_param_count
 
 
 def iter_gated_attention_modules(model):
@@ -134,21 +268,13 @@ def gated_attention_reg_loss(model, reg_type="l1", target=1.0):
     return loss.to(device=device, dtype=dtype)
 
 
-def get_trainable_state_dict(model):
-    state_dict = {}
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            state_dict[name] = param.detach().cpu()
-    return state_dict
-
-
 def save_gated_attention_checkpoint(model, out_dir, filename, env):
     if env.global_rank != 0:
         return
     os.makedirs(out_dir, exist_ok=True)
     ckpt_path = os.path.join(out_dir, filename)
-    torch.save(get_trainable_state_dict(unwrap_model(model)), ckpt_path)
-    env.print_master(f"Saving gated-attention checkpoint to {ckpt_path}")
+    torch.save(unwrap_model(model).state_dict(), ckpt_path)
+    env.print_master(f"Saving ToMoE gated-attention checkpoint to {ckpt_path}")
 
 
 def load_gated_attn_model(hf_model, data_type):
@@ -198,8 +324,14 @@ def main(
     gate_reg_weight: float = 0.0,
     gate_reg_type: str = "l1",
     gate_target: float = 1.0,
+    moe_num_experts: int = 8,
+    moe_top_k: int = 1,
+    moe_layers: str = "all",
+    moe_expert_init: str = "balanced",
+    moe_aux_loss_weight: float = 1.0,
+    hn_path: str = None,
     freeze_base_model: bool = True,
-    train_gate_only: bool = True,
+    train_gate_only: bool = False,
 ):
     env = DistributedEnv()
     print(env)
@@ -241,18 +373,36 @@ def main(
     ignored_token = tokenizer.bos_token_id
     model.config.use_cache = False
 
+    if hn_path is not None:
+        model, converted_layers = construct_tomoe_from_hypernetwork(
+            model,
+            hn_path=hn_path,
+            num_experts=moe_num_experts,
+        )
+    else:
+        converted_layers = construct_tomoe_mlp_layers(
+            model,
+            num_experts=moe_num_experts,
+            moe_layers=moe_layers,
+            expert_init=moe_expert_init,
+            top_k=moe_top_k,
+        )
+
     attached_layers = attach_gated_attention_modules(
         model,
         gate_rank=gate_rank,
         gate_init_bias=gate_init_bias,
     )
-    gate_param_count = freeze_for_gated_attention(
+    gate_param_count, moe_param_count = freeze_for_joint_training(
         model,
         freeze_base_model=freeze_base_model,
         train_gate_only=train_gate_only,
     )
+    env.print_master(f"Converted MLP layers to ToMoE: {converted_layers}")
+    env.print_master(f"ToMoE experts per converted MLP: {moe_num_experts}")
     env.print_master(f"Attached gated-attention modules: {attached_layers}")
     env.print_master(f"Trainable gated-attention parameters: {gate_param_count}")
+    env.print_master(f"Trainable ToMoE router parameters: {moe_param_count}")
     env.print_master(model.config)
 
     tic = time.time()
@@ -320,6 +470,8 @@ def main(
         gate_reg_weight=gate_reg_weight,
         gate_reg_type=gate_reg_type,
         gate_target=gate_target,
+        moe_aux_loss_weight=moe_aux_loss_weight,
+        moe_top_k=moe_top_k,
     )
 
 
@@ -341,6 +493,8 @@ def train_gated_attn(
     gate_reg_weight: float = 0.0,
     gate_reg_type: str = "l1",
     gate_target: float = 1.0,
+    moe_aux_loss_weight: float = 1.0,
+    moe_top_k: int = 1,
 ) -> None:
     device_id = env.local_rank
     iter_num = start_iter
@@ -381,7 +535,12 @@ def train_gated_attn(
                     teacher_logits = teacher_output.logits if hasattr(teacher_output, "logits") else teacher_output
                     set_gated_attention_status(unwrap_model(model), True)
 
-            model_output = model(input_ids, attention_mask=attention_mask, labels=targets)
+            model_output = model(
+                input_ids,
+                attention_mask=attention_mask,
+                labels=targets,
+                output_router_logits=(moe_aux_loss_weight > 0.0),
+            )
             logits = model_output.logits if hasattr(model_output, "logits") else model_output
 
             with autocast(device_type="cuda", enabled=False):
@@ -400,16 +559,23 @@ def train_gated_attn(
                         ignore_index=ignored_token,
                     )
 
+                if moe_aux_loss_weight > 0.0 and getattr(model_output, "router_logits", None):
+                    from models.modeling_llama_tomoe_gated_attn import combined_moe_balance_loss
+
+                    moe_aux_loss = combined_moe_balance_loss(model_output.router_logits, top_k=moe_top_k)
+                else:
+                    moe_aux_loss = torch.zeros((), device=main_loss.device, dtype=main_loss.dtype)
+
                 if gate_reg_weight > 0.0 and gate_reg_type != "none":
                     gate_reg = gated_attention_reg_loss(
                         unwrap_model(model),
                         reg_type=gate_reg_type,
                         target=gate_target,
                     )
-                    loss = main_loss + gate_reg_weight * gate_reg
                 else:
                     gate_reg = torch.zeros((), device=main_loss.device, dtype=main_loss.dtype)
-                    loss = main_loss
+
+                loss = main_loss + moe_aux_loss_weight * moe_aux_loss + gate_reg_weight * gate_reg
 
         if torch.isnan(loss):
             env.print_master("!!! nan loss detected !!!")
@@ -426,7 +592,8 @@ def train_gated_attn(
         if iter_num % log_interval == 0:
             env.print_master(
                 f"iter {iter_num}/{max_iter}: loss {main_loss.item():.4f}, "
-                f"gate_reg {gate_reg.item():.4f}, total {loss.item():.4f}, time: {toc*1000:.2f}ms"
+                f"moe_aux {moe_aux_loss.item():.4f}, gate_reg {gate_reg.item():.4f}, "
+                f"total {loss.item():.4f}, time: {toc*1000:.2f}ms"
             )
 
         iter_num += 1

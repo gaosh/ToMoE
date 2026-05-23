@@ -1,0 +1,22 @@
+CUDA_VISIBLE_DEVICES=0 nohup torchrun --nproc_per_node=1 --master_port=12344 train_tomoe_gated_attn.py \
+--use_bf16 True \
+--save_interval 100000 \
+--hf_model meta-llama/Meta-Llama-3-8B \
+--total_n_step 20000 \
+--kd_loss True \
+--dataset_list ['mix'] \
+--dataset_seed 777 \
+--use_fsdp False \
+--gate_lr 1e-3 \
+--gate_rank 128 \
+--gate_init_bias 3.0 \
+--gate_reg_weight 0.0 \
+--gate_reg_type l1 \
+--moe_num_experts 8 \
+--moe_top_k 1 \
+--moe_layers all \
+--moe_expert_init balanced \
+--moe_aux_loss_weight 1.0 \
+--freeze_base_model True \
+--train_gate_only False \
+--out_dir /orange/sgao1/sgao1/saved_hns/gated_attn_llama3_8b > llama3_8b_gated_attn.txt 2>&1 &
