@@ -30,15 +30,16 @@ def infer_model_dim(model, config, param_reg=None):
     return model_dim
 
 
-def normalize_hn_state_dict(checkpoint):
+def normalize_hn_state_dict(checkpoint, target_hn):
     if isinstance(checkpoint, dict) and "hn" in checkpoint:
         checkpoint = checkpoint["hn"]
+    target_uses_model_list = hasattr(target_hn, "model_list")
     state_dict = OrderedDict()
     for key, value in checkpoint.items():
         name = key
         if name.startswith("module."):
             name = name.replace("module.", "", 1)
-        if name.startswith("model_list."):
+        if name.startswith("model_list.") and not target_uses_model_list:
             name = name.replace("model_list.", "", 1)
         state_dict[name] = value
     return state_dict
@@ -179,7 +180,15 @@ def main(
     load_gated_attention_state(model, checkpoint)
 
     hn, hn_helper, param_reg = build_hn_for_model(model, config, dynamic_experts)
-    hn.load_state_dict(normalize_hn_state_dict(checkpoint), strict=False)
+    load_result = hn.load_state_dict(normalize_hn_state_dict(checkpoint, hn), strict=False)
+    if load_result.missing_keys or load_result.unexpected_keys:
+        print("[hn-load]")
+        print(f"missing_keys: {len(load_result.missing_keys)}")
+        print(f"unexpected_keys: {len(load_result.unexpected_keys)}")
+        print(f"missing_keys_sample: {load_result.missing_keys[:5]}")
+        print(f"unexpected_keys_sample: {load_result.unexpected_keys[:5]}")
+    if len(load_result.missing_keys) > 0 and len(load_result.unexpected_keys) > 0:
+        raise RuntimeError("HN checkpoint did not match the export HN structure; refusing to export with an untrained HN.")
     hn.eval()
     hn_rnn, hn_experts = get_hn_parts(hn)
     with torch.no_grad():
