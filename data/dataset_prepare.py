@@ -9,25 +9,25 @@ DATASETS = [
         "repo": "HuggingFaceFW/fineweb-edu",
         "config": "sample-100BT",
         "split": "train",
-        "output_dir": "./data/fineweb_edu_100bt",
-        "cache_dir": "./data/cache/fineweb_edu",
+        "output_dir": "/orange/sgao1/sgao1/data/fineweb_edu_100bt",
+        "cache_dir": "/orange/sgao1/sgao1/cache/fineweb_edu",
     },
     {
         "name": "openwebmath",
         "repo": "open-web-math/open-web-math",
         "config": None,
         "split": "train",
-        "output_dir": "./data/openwebmath",
-        "cache_dir": "./data/cache/openwebmath",
+        "output_dir": "/orange/sgao1/sgao1/openwebmath",
+        "cache_dir": "/orange/sgao1/sgao1/cache/openwebmath",
     },
-    {
-        "name": "dclm_baseline",
-        "repo": "mlfoundations/dclm-baseline-1.0",
-        "config": None,
-        "split": "train",
-        "output_dir": "./data/dclm_baseline",
-        "cache_dir": "./data/cache/dclm_baseline",
-    },
+    # {
+    #     "name": "dclm_baseline",
+    #     "repo": "mlfoundations/dclm-baseline-1.0",
+    #     "config": None,
+    #     "split": "train",
+    #     "output_dir": "/orange/sgao1/sgao1/dclm_baseline",
+    #     "cache_dir": "/orange/sgao1/sgao1/cache/dclm_baseline",
+    # },
 ]
 
 
