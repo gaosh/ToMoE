@@ -119,6 +119,21 @@ def infer_attention_metadata(model, config, param_reg=None):
     return head_dim, num_kv_heads
 
 
+def infer_model_dim(model, config, param_reg=None):
+    model_dim = getattr(param_reg, "model_dim", None)
+    if model_dim is None:
+        model_dim = getattr(config, "hidden_size", None)
+    if model_dim is None:
+        for module in unwrap_model(model).modules():
+            if type(module).__name__ in ("LlamaMLP", "LlamaAttention", "LlamaFlashAttention2", "LlamaSdpaAttention"):
+                model_dim = getattr(module, "hidden_size", None)
+                if model_dim is not None:
+                    break
+    if model_dim is None:
+        raise ValueError("Could not infer model hidden size from param_reg, config, or model modules.")
+    return model_dim
+
+
 def iter_gated_attention_modules(model):
     for module in model.modules():
         if type(module).__name__ == "virtual_gate_module" and module.gate_module is not None:
@@ -273,7 +288,7 @@ def main(
             torch_dtype=data_type,
         )
         tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
-        ignored_token = tokenizer.bos_token_id
+        ignored_token = tokenizer.eos_token_id
         PruneLlamaDecoderLayer = LlamaDecoderLayer
     else:
         raise ValueError(f"Unsupported hf_model for gated-attention ToMoE training: {hf_model}")
@@ -313,10 +328,11 @@ def main(
 
     param_reg = collect_info_reg_llama(model, p=p, lam=lam)
     head_dim, num_kv_heads = infer_attention_metadata(model, model.config, param_reg)
+    model_dim = infer_model_dim(model, model.config, param_reg)
     rnn = hypernetwork(t_structures=param_reg.structures, experts=dynamic_experts)
     experts_list = experts_module_list(
         structures=param_reg.structures,
-        model_dim=param_reg.model_dim,
+        model_dim=model_dim,
         experts=dynamic_experts,
         alpha=dynamic_alpha,
         head_dim=head_dim,

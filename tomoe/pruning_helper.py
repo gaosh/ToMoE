@@ -63,11 +63,32 @@ class collect_info_reg_llama(nn.Module):
         self.lam = lam
         self.model_dim = None
         self.width_piror = None
+        self.full_model_params = sum(p.numel() for p in model.parameters())
+        self.fixed_target_params = 0
         print(self.gate_type)
 
         modules = list(model.modules())
+        has_attention_arch_gate = any(
+            type(m).__name__ in ('virtual_vo_operation', 'virtual_block_attn_operation')
+            for m in modules
+        )
         for layer_id in range(len(modules)):
             m = modules[layer_id]
+            if (
+                not has_attention_arch_gate
+                and type(m).__name__ in ('LlamaAttention', 'LlamaFlashAttention2', 'LlamaSdpaAttention')
+            ):
+                if self.model_dim == None:
+                    self.model_dim = m.hidden_size
+                self.head_dim = m.head_dim
+                self.num_heads = m.num_heads
+                self.num_kv_heads = m.num_key_value_heads
+                attn_params = 0
+                for attr in ('q_proj', 'k_proj', 'v_proj', 'o_proj'):
+                    proj = getattr(m, attr, None)
+                    if proj is not None:
+                        attn_params += sum(p.numel() for p in proj.parameters())
+                self.fixed_target_params += attn_params
             if type(m).__name__ == 'virtual_block_basic_operation':
                 if self.model_dim == None:
                     self.model_dim = m.dim
@@ -121,7 +142,11 @@ class collect_info_reg_llama(nn.Module):
                 self.num_w_list.append(None)
                 self.gate_type.append('basic_gate')
 
-        print("number of oringal parameters: %.3f" % (self.sum_ori_params / 10 ** 6))
+        self.sum_ori_params += self.fixed_target_params
+        print("full model parameters: %.3fM" % (self.full_model_params / 10 ** 6))
+        print("ToMoE regularized target parameters: %.3fM" % (self.sum_ori_params / 10 ** 6))
+        if self.fixed_target_params > 0:
+            print("always-active attention target parameters: %.3fM" % (self.fixed_target_params / 10 ** 6))
         print(self.gate_type)
     
     def count_current_params(self, vectors):
@@ -130,7 +155,7 @@ class collect_info_reg_llama(nn.Module):
         print("model dim: %.1f"%(self.model_dim))
         with torch.no_grad():
             att_flag = False
-            sum_params = 0
+            sum_params = self.fixed_target_params
             i = 0
             ind = 0
             model_dim = self.model_dim
@@ -165,7 +190,7 @@ class collect_info_reg_llama(nn.Module):
         
     def forward(self, vectors):
         att_flag = False
-        sum_params = 0
+        sum_params = self.fixed_target_params
         np_sum_params = 0
 
         i = 0
