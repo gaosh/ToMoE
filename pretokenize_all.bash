@@ -11,12 +11,10 @@ python data/pretokenize_and_pack.py \
     --seq_len 8192 \
     --target_tokens 20000000000 \
     --shard_sequences 4096 \
+    --batch_size 2048 \
     --shuffle_files \
     --seed 42 \
-    --add_eos \
-    > fineweb_pretokenize.log 2>&1 &
-
-PID1=$!
+    --add_eos
 
 python data/pretokenize_and_pack.py \
     --model_name ${MODEL_NAME} \
@@ -25,14 +23,7 @@ python data/pretokenize_and_pack.py \
     --seq_len 8192 \
     --target_tokens 5000000000 \
     --shard_sequences 4096 \
+    --batch_size 2048 \
     --shuffle_files \
     --seed 43 \
-    --add_eos \
-    > openwebmath_pretokenize.log 2>&1 &
-
-PID2=$!
-
-wait $PID1
-wait $PID2
-
-echo "All datasets finished."
+    --add_eos
