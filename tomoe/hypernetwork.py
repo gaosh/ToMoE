@@ -421,6 +421,99 @@ class virtual_dynamic_operation(nn.Module):
                 return overall_loss * num_experts
 
 
+class SingleGatedAttnModule(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        head_dim: int,
+        rank: int = 128,
+        init_bias: float = 3.0,
+    ):
+        super().__init__()
+        if d_model <= 0 or n_heads <= 0 or head_dim <= 0 or rank <= 0:
+            raise ValueError("d_model, n_heads, head_dim, and rank must be positive.")
+
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = head_dim
+        self.rank = rank
+
+        self.gate_down = nn.Linear(d_model, rank, bias=False)
+        self.ln = nn.LayerNorm(rank)
+        self.gate_up = nn.Linear(rank, n_heads * head_dim, bias=True)
+        with torch.no_grad():
+            self.gate_up.bias.fill_(init_bias)
+
+        self.rnn_state = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3 or x.size(-1) != self.d_model:
+            raise ValueError(f"x must be [B, T, {self.d_model}], got {tuple(x.shape)}")
+
+        batch_size, sequence_length, _ = x.shape
+        z = self.gate_down(x)
+        if self.rnn_state is not None:
+            rnn_state = self.rnn_state.to(device=z.device, dtype=z.dtype)
+            if rnn_state.dim() == 3:
+                rnn_state = rnn_state.mean(dim=0)
+            if rnn_state.dim() == 2 and rnn_state.size(0) == 1:
+                rnn_state = rnn_state.squeeze(0)
+            if rnn_state.dim() == 1:
+                z = z + rnn_state.view(1, 1, -1)
+            elif rnn_state.dim() == 2 and rnn_state.size(0) == batch_size:
+                z = z + rnn_state[:, None, :]
+            else:
+                raise ValueError(f"Unsupported rnn_state shape for gated attention: {tuple(rnn_state.shape)}")
+
+        z = F.gelu(self.ln(z))
+        gate = torch.sigmoid(self.gate_up(z))
+        return gate.view(batch_size, sequence_length, self.n_heads, self.head_dim)
+
+
+class GatedAttList(nn.Module):
+    def __init__(
+        self,
+        num_layers: int,
+        d_model: int,
+        n_heads: int,
+        head_dim: int,
+        rank: int = 128,
+    ):
+        super().__init__()
+        self.modules_list = nn.ModuleList(
+            [
+                SingleGatedAttnModule(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    head_dim=head_dim,
+                    rank=rank,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+    def __getitem__(self, idx):
+        return self.modules_list[idx]
+
+    def __len__(self):
+        return len(self.modules_list)
+
+    def __iter__(self):
+        return iter(self.modules_list)
+
+
+class virtual_gate_module(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gate_module = None
+
+    def forward(self, hidden_states, use_gate=False):
+        if self.gate_module is None or not use_gate:
+            return 1.0
+        return self.gate_module(hidden_states)
+
+
 def generate_random_mask_like(input_tensor, mask_prob=0.96):
     """
     Generate a random binary mask with the same shape, device, and dtype as the input tensor.
