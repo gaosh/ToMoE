@@ -43,9 +43,8 @@ def gumbel_sigmoid_function(logits: torch.Tensor, tau: float = 1, hard: bool = F
 
     """
     if sample:
-        device = logits.get_device()
         gumbels = (
-        -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format, device=device).exponential_().log()
+        -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format, device=logits.device).exponential_().log()
         )  # ~Gumbel(0, 1)
         gumbels = (logits + gumbels + offset) / tau  # ~Gumbel(logits, tau)
     else:
@@ -62,12 +61,7 @@ def gumbel_sigmoid_function(logits: torch.Tensor, tau: float = 1, hard: bool = F
     return ret
 
 def gumbel_softmax_sample(logits,  T, sample=True):
-    gumbel_sample = sample_gumbel(logits.size())
-    if logits.get_device() == -1:
-        logits = logits.cpu()
-        gumbel_sample = gumbel_sample.cpu()
-    else:
-        gumbel_sample = gumbel_sample.to(logits.get_device())
+    gumbel_sample = sample_gumbel(logits.size()).to(logits.device)
 
     if sample:
         y = logits + gumbel_sample
@@ -266,7 +260,7 @@ class single_experts_module(nn.Module):
         if self.attn_flag:
             # width_mean = witdh_cover = 0
             self.rnn_state = rnn_state
-            device = rnn_state.get_device()
+            device = rnn_state.device
             if self.qk_static_flag:
                 output_constant = self.linear_decoder(F.gelu(self.ln(rnn_state.mean(dim=0).unsqueeze(0))))[:, self.head_dim:]
                 binary_approx_part2 = gumbel_sigmoid_function(output_constant, offset=self.base, tau=self.T, sample=True).squeeze()
@@ -319,7 +313,7 @@ class single_experts_module(nn.Module):
         if self.attn_flag:
             #width_final = []
             #full_embeding = rnn_state
-            device = rnn_state.get_device()
+            device = rnn_state.device
             pair_loss =  torch.scalar_tensor(0).to(device).float()
             width_final = torch.scalar_tensor(0).to(device).float()
             # width_final = torch.scalar_tensor(0).to(device).float()
@@ -334,7 +328,7 @@ class single_experts_module(nn.Module):
             out_before_binary = self.linear_decoder(F.gelu(self.ln(full_embeding)))
             binary = gumbel_sigmoid_function(logits=out_before_binary, tau=self.T, offset=self.base, sample=True, hard=True).squeeze()
 
-            device = binary.get_device()
+            device = binary.device
 
             union_of_experts = experts_union(binary)
             
