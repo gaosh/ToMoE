@@ -17,4 +17,4 @@ CUDA_VISIBLE_DEVICES=0 nohup torchrun --nproc_per_node=1 --master_port=12344 tra
 --gate_init_bias 3.0 \
 --gate_reg_weight 0.0 \
 --gate_reg_type l1 \
---out_dir /orange/sgao1/sgao1/saved_hns/gated_attn_llama3_8b > llama3_8b_gated_attn.txt 2>&1 &
+--out_dir /orange/sgao1/sgao1/saved_hns/gated_attn_llama3_8b > llama3_8b_gated_attn.txt
