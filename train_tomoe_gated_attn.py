@@ -448,12 +448,13 @@ def train_hn_with_gated_attention(
 ) -> None:
     device_id = env.local_rank
     iter_num = start_iter
+    use_grad_scaler = data_type == torch.float16
     if fsdp:
         from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 
-        scaler = ShardedGradScaler(enabled=(data_type != torch.float32))
+        scaler = ShardedGradScaler(enabled=use_grad_scaler)
     else:
-        scaler = torch.cuda.amp.GradScaler(enabled=(data_type != torch.float32))
+        scaler = torch.cuda.amp.GradScaler(enabled=use_grad_scaler)
 
     gate_params = gated_attention_parameters(unwrap_model(model))
     optimizer = torch.optim.AdamW(
