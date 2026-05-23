@@ -71,6 +71,54 @@ def attach_gated_attention_modules(model, gate_rank=128, gate_init_bias=3.0):
     return attached
 
 
+def count_parameters(module, trainable_only=False):
+    return sum(
+        param.numel()
+        for param in module.parameters()
+        if (param.requires_grad or not trainable_only)
+    )
+
+
+def count_tomoe_target_parameters(model):
+    total = 0
+    for module in unwrap_model(model).modules():
+        if type(module).__name__ in ("LlamaMLP", "LlamaAttention", "LlamaFlashAttention2", "LlamaSdpaAttention"):
+            total += count_parameters(module)
+    return total
+
+
+def format_millions(num_params):
+    return f"{num_params / 1_000_000:.3f}M"
+
+
+def infer_attention_metadata(model, config, param_reg=None):
+    head_dim = getattr(param_reg, "head_dim", None)
+    if head_dim is None:
+        head_dim = getattr(config, "head_dim", None)
+    if head_dim is None and getattr(config, "hidden_size", None) is not None:
+        head_dim = config.hidden_size // config.num_attention_heads
+
+    num_kv_heads = getattr(param_reg, "num_kv_heads", None)
+    if num_kv_heads is None:
+        num_kv_heads = getattr(config, "num_key_value_heads", None)
+    if num_kv_heads is None:
+        num_kv_heads = getattr(config, "num_attention_heads", None)
+
+    for module in unwrap_model(model).modules():
+        if type(module).__name__ in ("LlamaAttention", "LlamaFlashAttention2", "LlamaSdpaAttention"):
+            if head_dim is None:
+                head_dim = getattr(module, "head_dim", None)
+            if num_kv_heads is None:
+                num_kv_heads = getattr(module, "num_key_value_heads", None)
+            break
+
+    if head_dim is None:
+        raise ValueError("Could not infer attention head_dim from param_reg, config, or model attention modules.")
+    if num_kv_heads is None:
+        raise ValueError("Could not infer num_key_value_heads from param_reg, config, or model attention modules.")
+    return head_dim, num_kv_heads
+
+
 def iter_gated_attention_modules(model):
     for module in model.modules():
         if type(module).__name__ == "virtual_gate_module" and module.gate_module is not None:
@@ -231,7 +279,11 @@ def main(
         raise ValueError(f"Unsupported hf_model for gated-attention ToMoE training: {hf_model}")
 
     model.config.use_cache = False
+    full_model_params_before_gated_attn = count_parameters(model)
+    tomoe_construction_target_params = count_tomoe_target_parameters(model)
     attach_gated_attention_modules(model, gate_rank=gate_rank, gate_init_bias=gate_init_bias)
+    full_model_params_after_gated_attn = count_parameters(model)
+    gated_attention_params = sum(count_parameters(module) for module in iter_gated_attention_modules(model))
     env.print_master(model.config)
     env.print_master(model)
 
@@ -260,14 +312,15 @@ def main(
     env.print(f"Initialilzing training dataset - done. Time elapse (s): {toc:.2f}")
 
     param_reg = collect_info_reg_llama(model, p=p, lam=lam)
+    head_dim, num_kv_heads = infer_attention_metadata(model, model.config, param_reg)
     rnn = hypernetwork(t_structures=param_reg.structures, experts=dynamic_experts)
     experts_list = experts_module_list(
         structures=param_reg.structures,
         model_dim=param_reg.model_dim,
         experts=dynamic_experts,
         alpha=dynamic_alpha,
-        head_dim=param_reg.head_dim,
-        num_kv_heads=param_reg.num_kv_heads,
+        head_dim=head_dim,
+        num_kv_heads=num_kv_heads,
     )
     hn_helper = help_functions_hn(
         param_reg.structures,
@@ -280,6 +333,16 @@ def main(
     experts_list.to(device_id)
     hn = hn_module_list(rnn, experts_list)
     hn.to(device_id)
+    gate_trainable_params = sum(param.numel() for param in gated_attention_parameters(model))
+    hn_trainable_params = count_parameters(hn)
+    env.print_master("[parameter-count]")
+    env.print_master(f"full_model_params_before_gated_attn: {format_millions(full_model_params_before_gated_attn)}")
+    env.print_master(f"full_model_params_after_gated_attn: {format_millions(full_model_params_after_gated_attn)}")
+    env.print_master(f"tomoe_construction_target_params: {format_millions(tomoe_construction_target_params)}")
+    env.print_master(f"gated_attention_params: {format_millions(gated_attention_params)}")
+    env.print_master(f"hn_trainable_params: {format_millions(hn_trainable_params)}")
+    env.print_master(f"gate_trainable_params: {format_millions(gate_trainable_params)}")
+    env.print_master(f"total_trainable_params: {format_millions(hn_trainable_params + gate_trainable_params)}")
 
     if env.world_size > 1:
         hn = DDP(hn, find_unused_parameters=False)
