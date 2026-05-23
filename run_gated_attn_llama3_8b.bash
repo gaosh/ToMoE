@@ -7,16 +7,14 @@ CUDA_VISIBLE_DEVICES=0 nohup torchrun --nproc_per_node=1 --master_port=12344 tra
 --dataset_list ['mix'] \
 --dataset_seed 777 \
 --use_fsdp False \
---gate_lr 1e-3 \
+--dynamic_experts 8 \
+--dynamic_alpha 3.0 \
+--load_balance_alpha 1.0 \
+--p 0.5 \
+--lam 16.0 \
+--hn_lr 1e-3 \
 --gate_rank 128 \
 --gate_init_bias 3.0 \
 --gate_reg_weight 0.0 \
 --gate_reg_type l1 \
---moe_num_experts 8 \
---moe_top_k 1 \
---moe_layers all \
---moe_expert_init balanced \
---moe_aux_loss_weight 1.0 \
---freeze_base_model True \
---train_gate_only False \
 --out_dir /orange/sgao1/sgao1/saved_hns/gated_attn_llama3_8b > llama3_8b_gated_attn.txt 2>&1 &
