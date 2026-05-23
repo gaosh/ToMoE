@@ -44,6 +44,12 @@ def normalize_hn_state_dict(checkpoint):
     return state_dict
 
 
+def get_hn_parts(hn):
+    if hasattr(hn, "model_list"):
+        return hn.model_list[0], hn.model_list[1]
+    return hn[0], hn[1]
+
+
 def load_gated_attention_state(model, checkpoint):
     if not (isinstance(checkpoint, dict) and "gated_attention" in checkpoint):
         return
@@ -91,6 +97,7 @@ def convert_mlp_to_actual_moe(model, width_union_list, hn, dynamic_experts):
     from models.modeling_llama_tomoe_gated_actual_moe import LlamaMlpExpert, SingleMlpRouter
 
     device = next(model.parameters()).device
+    _, hn_experts = get_hn_parts(hn)
     mlp_unions = [item for item in width_union_list if not isinstance(item, int) and item.sum().item() != 0]
     cfgs = []
     mlp_index = 0
@@ -104,7 +111,7 @@ def convert_mlp_to_actual_moe(model, width_union_list, hn, dynamic_experts):
             mid_index = torch.argmax(mid_vector).view(1)
         mid_dim = int(mid_index.numel())
 
-        source_expert = hn[1].module_list[moe_index]
+        source_expert = hn_experts.module_list[moe_index]
         router = SingleMlpRouter(module.config.hidden_size, experts=dynamic_experts).to(device)
         router.linear_router.weight.data.copy_(source_expert.linear_router.weight.data.to(device))
 
@@ -174,10 +181,11 @@ def main(
     hn, hn_helper, param_reg = build_hn_for_model(model, config, dynamic_experts)
     hn.load_state_dict(normalize_hn_state_dict(checkpoint), strict=False)
     hn.eval()
+    hn_rnn, hn_experts = get_hn_parts(hn)
     with torch.no_grad():
-        vectors = hn[0]()
+        vectors = hn_rnn()
         width_list, width_union_list = hn_helper.prepare_for_eval(
-            hn[1].module_list,
+            hn_experts.module_list,
             vectors,
             non_uniform=True,
             return_vector_union=True,
