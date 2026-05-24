@@ -25,6 +25,7 @@ torchrun --nproc_per_node=8 train_continual_pretrain_fsdp.py \
 import argparse
 import datetime
 import glob
+import json
 import math
 import os
 import shutil
@@ -204,6 +205,63 @@ def validate_model_name_or_path(path):
         )
 
 
+def validate_output_dir(args):
+    if not os.path.isdir(args.model_name_or_path):
+        return
+    model_dir = os.path.abspath(args.model_name_or_path)
+    output_dir = os.path.abspath(args.output_dir)
+    if output_dir == model_dir:
+        raise ValueError(
+            "output_dir must not be the same directory as model_name_or_path; "
+            "checkpoint saving would overwrite the exported base model config."
+        )
+    common = os.path.commonpath([model_dir, output_dir])
+    if common == model_dir:
+        raise ValueError(
+            "output_dir must not be inside model_name_or_path; "
+            "keep continual-pretraining checkpoints outside the exported base model directory."
+        )
+
+
+def load_source_config(args):
+    source_dir = args.resume_from_checkpoint or args.model_name_or_path
+    if not os.path.isdir(source_dir):
+        return None, None
+    source_config = os.path.join(source_dir, "config.json")
+    if not os.path.exists(source_config):
+        return source_config, None
+    with open(source_config, "r", encoding="utf-8") as f:
+        return source_config, json.load(f)
+
+
+def validate_loaded_config(model, source_config, env):
+    if source_config is None:
+        return
+    expected = source_config.get("tomoe_moe_cfgs", None)
+    actual = getattr(unwrap_model(model).config, "tomoe_moe_cfgs", None)
+    if expected != actual:
+        env.print_master("[config-check] source tomoe_moe_cfgs != loaded model.config.tomoe_moe_cfgs")
+        env.print_master(f"[config-check] source type: {type(expected).__name__}")
+        env.print_master(f"[config-check] loaded type: {type(actual).__name__}")
+        raise RuntimeError(
+            "Loaded model config differs from source config before training. "
+            "The model directory or custom modeling code is inconsistent."
+        )
+
+
+def validate_source_config_unchanged(source_config_path, source_config, env):
+    if source_config_path is None or source_config is None or not os.path.exists(source_config_path):
+        return
+    with open(source_config_path, "r", encoding="utf-8") as f:
+        current = json.load(f)
+    if current.get("tomoe_moe_cfgs", None) != source_config.get("tomoe_moe_cfgs", None):
+        env.print_master(f"[config-check] source config changed on disk: {source_config_path}")
+        raise RuntimeError(
+            "The exported source model config changed during training. "
+            "Check MODEL_NAME_OR_PATH/OUTPUT_DIR path settings."
+        )
+
+
 def build_model(args, env):
     load_path = args.resume_from_checkpoint or args.model_name_or_path
     validate_model_name_or_path(load_path)
@@ -323,7 +381,29 @@ def copy_custom_code_files(args, save_dir):
             shutil.copy(path, os.path.join(save_dir, os.path.basename(path)))
 
 
-def save_checkpoint(model, tokenizer, optimizer, scheduler, args, env, tag, global_step, epoch, consumed_tokens):
+def copy_source_config(args, save_dir):
+    config_source = args.resume_from_checkpoint or args.model_name_or_path
+    if not os.path.isdir(config_source):
+        return
+    source_config = os.path.join(config_source, "config.json")
+    if os.path.exists(source_config):
+        shutil.copy2(source_config, os.path.join(save_dir, "config.json"))
+
+
+def save_checkpoint(
+    model,
+    tokenizer,
+    optimizer,
+    scheduler,
+    args,
+    env,
+    tag,
+    global_step,
+    epoch,
+    consumed_tokens,
+    source_config_path=None,
+    source_config=None,
+):
     save_dir = os.path.join(args.output_dir, tag)
     if env.global_rank == 0:
         os.makedirs(save_dir, exist_ok=True)
@@ -339,6 +419,7 @@ def save_checkpoint(model, tokenizer, optimizer, scheduler, args, env, tag, glob
 
     if env.global_rank == 0:
         base = unwrap_model(model)
+        env.print_master(f"[checkpoint] writing HuggingFace checkpoint to: {save_dir}")
         base.save_pretrained(
             save_dir,
             state_dict=model_state,
@@ -348,6 +429,9 @@ def save_checkpoint(model, tokenizer, optimizer, scheduler, args, env, tag, glob
         if tokenizer is not None:
             tokenizer.save_pretrained(save_dir)
         copy_custom_code_files(args, save_dir)
+        copy_source_config(args, save_dir)
+        env.print_master(f"[checkpoint] copied source config to: {os.path.join(save_dir, 'config.json')}")
+        validate_source_config_unchanged(source_config_path, source_config, env)
 
         training_state = {
             "optimizer": optim_state,
@@ -400,6 +484,10 @@ def train(args):
     torch.manual_seed(args.seed + env.global_rank)
     max_train_tokens = parse_token_count(args.max_train_tokens)
     args.effective_max_steps = infer_effective_max_steps(args, env, max_train_tokens)
+    validate_output_dir(args)
+    source_config_path, source_config = load_source_config(args)
+    if source_config_path is not None:
+        env.print_master(f"[config-check] source config path: {source_config_path}")
     if env.global_rank == 0:
         os.makedirs(args.output_dir, exist_ok=True)
     if args.effective_max_steps is not None:
@@ -410,6 +498,7 @@ def train(args):
     dataloader, sampler = build_dataloader(dataset, args, env)
 
     model = build_model(args, env)
+    validate_loaded_config(model, source_config, env)
     model = wrap_fsdp(model, args, env)
     optimizer = build_optimizer(model, args, env)
     scheduler = build_scheduler(optimizer, args)
@@ -495,6 +584,8 @@ def train(args):
                     global_step=global_step,
                     epoch=epoch,
                     consumed_tokens=consumed_tokens,
+                    source_config_path=source_config_path,
+                    source_config=source_config,
                 )
 
             reached_max_steps = args.max_steps is not None and global_step >= args.max_steps
@@ -511,6 +602,8 @@ def train(args):
                     global_step=global_step,
                     epoch=epoch,
                     consumed_tokens=consumed_tokens,
+                    source_config_path=source_config_path,
+                    source_config=source_config,
                 )
                 dist.destroy_process_group()
                 return
@@ -526,6 +619,8 @@ def train(args):
         global_step=global_step,
         epoch=total_epochs - 1,
         consumed_tokens=consumed_tokens,
+        source_config_path=source_config_path,
+        source_config=source_config,
     )
     dist.destroy_process_group()
 

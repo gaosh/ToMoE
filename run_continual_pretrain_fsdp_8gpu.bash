@@ -35,6 +35,15 @@ if [[ "${MODEL_NAME_OR_PATH}" = /* ]] && [ ! -d "${MODEL_NAME_OR_PATH}" ]; then
     exit 1
 fi
 
+MODEL_REALPATH="$(realpath "${MODEL_NAME_OR_PATH}")"
+OUTPUT_REALPATH="$(realpath -m "${OUTPUT_DIR}")"
+if [ "${MODEL_REALPATH}" = "${OUTPUT_REALPATH}" ]; then
+    echo "OUTPUT_DIR must not be the same directory as MODEL_NAME_OR_PATH." >&2
+    echo "MODEL_NAME_OR_PATH=${MODEL_REALPATH}" >&2
+    echo "OUTPUT_DIR=${OUTPUT_REALPATH}" >&2
+    exit 1
+fi
+
 mapfile -t DATA_DIRS < <(
     awk '
         $1 == "--output_dir" {
