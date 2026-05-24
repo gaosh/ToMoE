@@ -7,7 +7,7 @@ cd "${SCRIPT_DIR}"
 
 PRETOKENIZE_SCRIPT="${SCRIPT_DIR}/pretokenize_all.bash"
 
-MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/path/to/tomoe_or_llama_model}"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b}"
 
 SEQ_LEN="${SEQ_LEN:-8192}"
@@ -21,6 +21,19 @@ LOGGING_STEPS="${LOGGING_STEPS:-10}"
 SAVE_STEPS="${SAVE_STEPS:-10000}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
+
+if [ -z "${MODEL_NAME_OR_PATH}" ] || [ "${MODEL_NAME_OR_PATH}" = "/path/to/tomoe_or_llama_model" ]; then
+    echo "Please set MODEL_NAME_OR_PATH to the real HF/local model directory before launching." >&2
+    echo "Example:" >&2
+    echo "  MODEL_NAME_OR_PATH=/orange/sgao1/sgao1/saved_models/tomoe_gated_actual_moe_llama3_8b bash $0" >&2
+    exit 1
+fi
+
+if [[ "${MODEL_NAME_OR_PATH}" = /* ]] && [ ! -d "${MODEL_NAME_OR_PATH}" ]; then
+    echo "MODEL_NAME_OR_PATH is an absolute path but does not exist: ${MODEL_NAME_OR_PATH}" >&2
+    exit 1
+fi
 
 mapfile -t DATA_DIRS < <(
     awk '
@@ -41,7 +54,7 @@ echo "[continual-pretrain] output: ${OUTPUT_DIR}"
 echo "[continual-pretrain] data dirs:"
 printf '  %s\n' "${DATA_DIRS[@]}"
 
-torchrun --nproc_per_node=4 train_continual_pretrain_fsdp.py \
+torchrun --nproc_per_node="${NPROC_PER_NODE}" train_continual_pretrain_fsdp.py \
     --model_name_or_path "${MODEL_NAME_OR_PATH}" \
     --data_dirs "${DATA_DIRS[@]}" \
     --output_dir "${OUTPUT_DIR}" \

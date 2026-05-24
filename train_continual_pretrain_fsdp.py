@@ -191,8 +191,21 @@ def build_dataloader(dataset, args, env):
     return loader, sampler
 
 
+def validate_model_name_or_path(path):
+    if path is None or str(path).strip() == "" or str(path).startswith("/path/to/"):
+        raise ValueError(
+            "model_name_or_path is still a placeholder. "
+            "Pass a real local model directory or HuggingFace repo id."
+        )
+    if os.path.isabs(path) and not os.path.isdir(path):
+        raise FileNotFoundError(
+            f"model_name_or_path is an absolute path but does not exist: {path}"
+        )
+
+
 def build_model(args, env):
     load_path = args.resume_from_checkpoint or args.model_name_or_path
+    validate_model_name_or_path(load_path)
     dtype = torch.bfloat16 if args.bf16 else None
     env.print_master(f"Loading model from: {load_path}")
     model = AutoModelForCausalLM.from_pretrained(
@@ -291,6 +304,7 @@ def build_scheduler(optimizer, args):
 def maybe_load_tokenizer(args, env):
     tokenizer_path = args.tokenizer_name_or_path or args.model_name_or_path
     try:
+        validate_model_name_or_path(tokenizer_path)
         return AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
     except Exception as exc:
         env.print_master(f"[warning] Could not load tokenizer from {tokenizer_path}: {exc}")
