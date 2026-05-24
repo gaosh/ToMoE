@@ -22,6 +22,8 @@ SAVE_STEPS="${SAVE_STEPS:-10000}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
+COMPILE_MODEL="${COMPILE_MODEL:-0}"
+COMPILE_MODE="${COMPILE_MODE:-default}"
 
 if [ -z "${MODEL_NAME_OR_PATH}" ] || [ "${MODEL_NAME_OR_PATH}" = "/path/to/tomoe_or_llama_model" ]; then
     echo "Please set MODEL_NAME_OR_PATH to the real HF/local model directory before launching." >&2
@@ -60,8 +62,14 @@ fi
 
 echo "[continual-pretrain] model: ${MODEL_NAME_OR_PATH}"
 echo "[continual-pretrain] output: ${OUTPUT_DIR}"
+echo "[continual-pretrain] compile: ${COMPILE_MODEL} (${COMPILE_MODE})"
 echo "[continual-pretrain] data dirs:"
 printf '  %s\n' "${DATA_DIRS[@]}"
+
+EXTRA_ARGS=()
+if [ "${COMPILE_MODEL}" = "1" ]; then
+    EXTRA_ARGS+=(--compile_model --compile_mode "${COMPILE_MODE}")
+fi
 
 torchrun --nproc_per_node="${NPROC_PER_NODE}" train_continual_pretrain_fsdp.py \
     --model_name_or_path "${MODEL_NAME_OR_PATH}" \
@@ -80,4 +88,5 @@ torchrun --nproc_per_node="${NPROC_PER_NODE}" train_continual_pretrain_fsdp.py \
     --fsdp_transformer_layer_cls_to_wrap "${FSDP_LAYER_CLS}" \
     --num_workers "${NUM_WORKERS}" \
     --logging_steps "${LOGGING_STEPS}" \
-    --save_steps "${SAVE_STEPS}"
+    --save_steps "${SAVE_STEPS}" \
+    "${EXTRA_ARGS[@]}"

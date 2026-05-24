@@ -84,6 +84,8 @@ def parse_args():
 
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--gradient_checkpointing", action="store_true")
+    parser.add_argument("--compile_model", action="store_true")
+    parser.add_argument("--compile_mode", type=str, default="default")
     parser.add_argument("--fsdp_transformer_layer_cls_to_wrap", type=str, default="LlamaDecoderLayer")
 
     parser.add_argument("--logging_steps", type=int, default=10)
@@ -479,6 +481,22 @@ def consumed_tokens_for_step(global_step, args, env):
     )
 
 
+def log_elapsed(env, label, tic):
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    env.print_master(f"[timing] {label}: {time.time() - tic:.2f}s")
+
+
+def maybe_compile_model(model, args, env):
+    if not args.compile_model:
+        return model
+    tic = time.time()
+    env.print_master(f"[compile] torch.compile enabled, mode={args.compile_mode}")
+    compiled = torch.compile(model, mode=args.compile_mode)
+    log_elapsed(env, "torch.compile", tic)
+    return compiled
+
+
 def train(args):
     env = setup_distributed()
     torch.manual_seed(args.seed + env.global_rank)
@@ -493,15 +511,30 @@ def train(args):
     if args.effective_max_steps is not None:
         env.print_master(f"Effective max optimizer steps for scheduler: {args.effective_max_steps}")
 
+    tic = time.time()
     tokenizer = maybe_load_tokenizer(args, env)
+    log_elapsed(env, "tokenizer load", tic)
+
+    tic = time.time()
     dataset = build_dataset(args)
     dataloader, sampler = build_dataloader(dataset, args, env)
+    log_elapsed(env, "dataset/dataloader build", tic)
 
+    tic = time.time()
     model = build_model(args, env)
+    log_elapsed(env, "model from_pretrained", tic)
     validate_loaded_config(model, source_config, env)
+
+    tic = time.time()
     model = wrap_fsdp(model, args, env)
+    log_elapsed(env, "FSDP wrap", tic)
+
+    model = maybe_compile_model(model, args, env)
+
+    tic = time.time()
     optimizer = build_optimizer(model, args, env)
     scheduler = build_scheduler(optimizer, args)
+    log_elapsed(env, "optimizer/scheduler build", tic)
 
     global_step = 0
     start_epoch = 0
