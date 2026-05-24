@@ -87,6 +87,7 @@ def parse_args():
 
     parser.add_argument("--logging_steps", type=int, default=10)
     parser.add_argument("--save_steps", type=int, default=20000)
+    parser.add_argument("--save_shard_size", type=str, default="5GB")
     parser.add_argument("--resume_from_checkpoint", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
 
@@ -338,7 +339,12 @@ def save_checkpoint(model, tokenizer, optimizer, scheduler, args, env, tag, glob
 
     if env.global_rank == 0:
         base = unwrap_model(model)
-        base.save_pretrained(save_dir, state_dict=model_state, safe_serialization=True)
+        base.save_pretrained(
+            save_dir,
+            state_dict=model_state,
+            safe_serialization=True,
+            max_shard_size=args.save_shard_size,
+        )
         if tokenizer is not None:
             tokenizer.save_pretrained(save_dir)
         copy_custom_code_files(args, save_dir)

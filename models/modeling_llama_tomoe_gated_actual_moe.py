@@ -283,9 +283,14 @@ class LlamaMLP(nn.Module):
         self.config = config
         self.hidden_size = config.hidden_size
         self.intermediate_size = config.intermediate_size
-        self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        if getattr(config, "tomoe_moe_cfgs", None) is None:
+            self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+            self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
+            self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
+        else:
+            self.gate_proj = None
+            self.up_proj = None
+            self.down_proj = None
         self.act_fn = ACT2FN[config.hidden_act]
         self.router = None
         self.experts = nn.ModuleList()
@@ -1514,9 +1519,9 @@ def model_replace(model, cfgs):
                 raise ValueError("tomoe_moe_cfgs has fewer MLP widths than model layers.")
             mid_dim, expert_widths = mlp_layers[mlp_index]
             module.intermediate_size = mid_dim
-            module.gate_proj = nn.Linear(module.config.hidden_size, mid_dim, bias=False)
-            module.up_proj = nn.Linear(module.config.hidden_size, mid_dim, bias=False)
-            module.down_proj = nn.Linear(mid_dim, module.config.hidden_size, bias=False)
+            module.gate_proj = None
+            module.up_proj = None
+            module.down_proj = None
             module.router = SingleMlpRouter(module.config.hidden_size, experts=num_experts)
             module.experts = nn.ModuleList(
                 [
