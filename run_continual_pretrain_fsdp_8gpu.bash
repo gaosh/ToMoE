@@ -41,7 +41,7 @@ echo "[continual-pretrain] output: ${OUTPUT_DIR}"
 echo "[continual-pretrain] data dirs:"
 printf '  %s\n' "${DATA_DIRS[@]}"
 
-torchrun --nproc_per_node=8 train_continual_pretrain_fsdp.py \
+torchrun --nproc_per_node=4 train_continual_pretrain_fsdp.py \
     --model_name_or_path "${MODEL_NAME_OR_PATH}" \
     --data_dirs "${DATA_DIRS[@]}" \
     --output_dir "${OUTPUT_DIR}" \
