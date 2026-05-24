@@ -1483,17 +1483,36 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         return reordered_past
 
 
-def model_replace(model, cfgs):
+def _parse_moe_cfgs(cfgs):
     if not cfgs:
-        return
+        return None, []
+    if isinstance(cfgs, dict):
+        num_experts = int(cfgs["num_experts"])
+        layers = cfgs["layers"]
+        parsed_layers = []
+        for layer_cfg in layers:
+            dense_width = int(layer_cfg["dense_width"])
+            parsed_layers.append((dense_width, [dense_width for _ in range(num_experts)]))
+        return num_experts, parsed_layers
+
     num_experts = int(cfgs[-1])
-    mlp_widths = [int(width) for width in cfgs[:-1]]
+    parsed_layers = []
+    for width in cfgs[:-1]:
+        dense_width = int(width)
+        parsed_layers.append((dense_width, [dense_width for _ in range(num_experts)]))
+    return num_experts, parsed_layers
+
+
+def model_replace(model, cfgs):
+    num_experts, mlp_layers = _parse_moe_cfgs(cfgs)
+    if num_experts is None:
+        return
     mlp_index = 0
     for module in model.modules():
         if type(module).__name__ == "LlamaMLP":
-            if mlp_index >= len(mlp_widths):
+            if mlp_index >= len(mlp_layers):
                 raise ValueError("tomoe_moe_cfgs has fewer MLP widths than model layers.")
-            mid_dim = mlp_widths[mlp_index]
+            mid_dim, expert_widths = mlp_layers[mlp_index]
             module.intermediate_size = mid_dim
             module.gate_proj = nn.Linear(module.config.hidden_size, mid_dim, bias=False)
             module.up_proj = nn.Linear(module.config.hidden_size, mid_dim, bias=False)
@@ -1501,8 +1520,8 @@ def model_replace(model, cfgs):
             module.router = SingleMlpRouter(module.config.hidden_size, experts=num_experts)
             module.experts = nn.ModuleList(
                 [
-                    LlamaMlpExpert(module.config.hidden_size, mid_dim, module.config.hidden_act)
-                    for _ in range(num_experts)
+                    LlamaMlpExpert(module.config.hidden_size, expert_width, module.config.hidden_act)
+                    for expert_width in expert_widths
                 ]
             )
             module.actual_moe = True

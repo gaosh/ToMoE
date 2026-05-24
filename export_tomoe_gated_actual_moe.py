@@ -121,20 +121,15 @@ def convert_mlp_to_actual_moe(model, width_union_list, hn, dynamic_experts):
         router.linear_router.weight.data.copy_(source_expert.linear_router.weight.data.to(device))
 
         expert_modules = torch.nn.ModuleList()
-        source_eval = source_expert.experts_for_eval[:, mid_index].to(device=device)
-        for expert_idx in range(dynamic_experts):
-            expert_mask = source_eval[expert_idx] > 0
-            expert_index = mid_index[expert_mask]
-            if expert_index.numel() == 0:
-                expert_index = mid_index[:1]
+        for _ in range(dynamic_experts):
             expert = LlamaMlpExpert(
                 module.config.hidden_size,
-                int(expert_index.numel()),
+                mid_dim,
                 module.config.hidden_act,
             ).to(device)
-            expert.gate_proj.weight.data.copy_(old_gate_proj.weight.data[expert_index, :])
-            expert.up_proj.weight.data.copy_(old_up_proj.weight.data[expert_index, :])
-            expert.down_proj.weight.data.copy_(old_down_proj.weight.data[:, expert_index])
+            expert.gate_proj.weight.data.copy_(old_gate_proj.weight.data[mid_index, :])
+            expert.up_proj.weight.data.copy_(old_up_proj.weight.data[mid_index, :])
+            expert.down_proj.weight.data.copy_(old_down_proj.weight.data[:, mid_index])
             expert_modules.append(expert)
 
         dense_gate_proj = torch.nn.Linear(module.config.hidden_size, mid_dim, bias=False).to(device)
