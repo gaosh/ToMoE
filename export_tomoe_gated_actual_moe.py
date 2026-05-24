@@ -1,5 +1,6 @@
 import os
 import shutil
+import gc
 from collections import OrderedDict
 
 import torch
@@ -111,6 +112,9 @@ def convert_mlp_to_actual_moe(model, width_union_list, hn, dynamic_experts):
         if mid_index.numel() == 0:
             mid_index = torch.argmax(mid_vector).view(1)
         mid_dim = int(mid_index.numel())
+        old_gate_proj = module.gate_proj
+        old_up_proj = module.up_proj
+        old_down_proj = module.down_proj
 
         source_expert = hn_experts.module_list[moe_index]
         router = SingleMlpRouter(module.config.hidden_size, experts=dynamic_experts).to(device)
@@ -128,17 +132,17 @@ def convert_mlp_to_actual_moe(model, width_union_list, hn, dynamic_experts):
                 int(expert_index.numel()),
                 module.config.hidden_act,
             ).to(device)
-            expert.gate_proj.weight.data.copy_(module.gate_proj.weight.data[expert_index, :])
-            expert.up_proj.weight.data.copy_(module.up_proj.weight.data[expert_index, :])
-            expert.down_proj.weight.data.copy_(module.down_proj.weight.data[:, expert_index])
+            expert.gate_proj.weight.data.copy_(old_gate_proj.weight.data[expert_index, :])
+            expert.up_proj.weight.data.copy_(old_up_proj.weight.data[expert_index, :])
+            expert.down_proj.weight.data.copy_(old_down_proj.weight.data[:, expert_index])
             expert_modules.append(expert)
 
         dense_gate_proj = torch.nn.Linear(module.config.hidden_size, mid_dim, bias=False).to(device)
         dense_up_proj = torch.nn.Linear(module.config.hidden_size, mid_dim, bias=False).to(device)
         dense_down_proj = torch.nn.Linear(mid_dim, module.config.hidden_size, bias=False).to(device)
-        dense_gate_proj.weight.data.copy_(module.gate_proj.weight.data[mid_index, :])
-        dense_up_proj.weight.data.copy_(module.up_proj.weight.data[mid_index, :])
-        dense_down_proj.weight.data.copy_(module.down_proj.weight.data[:, mid_index])
+        dense_gate_proj.weight.data.copy_(old_gate_proj.weight.data[mid_index, :])
+        dense_up_proj.weight.data.copy_(old_up_proj.weight.data[mid_index, :])
+        dense_down_proj.weight.data.copy_(old_down_proj.weight.data[:, mid_index])
 
         module.intermediate_size = mid_dim
         module.gate_proj = dense_gate_proj
@@ -150,6 +154,10 @@ def convert_mlp_to_actual_moe(model, width_union_list, hn, dynamic_experts):
         cfgs.append(mid_dim)
         mlp_index += 1
         moe_index += 1
+        del old_gate_proj, old_up_proj, old_down_proj
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     return cfgs + [int(dynamic_experts)]
 
 
@@ -162,6 +170,7 @@ def main(
     gate_init_bias: float = 3.0,
     torch_dtype: str = "bfloat16",
     save_tokenizer: bool = True,
+    low_cpu_mem_usage: bool = True,
 ):
     dtype = {
         "float16": torch.float16,
@@ -170,9 +179,12 @@ def main(
     }[torch_dtype]
 
     from models.modeling_llama_tomoe_gated_attn import LlamaForCausalLM
-    from models.modeling_llama_tomoe_gated_actual_moe import LlamaForCausalLM as FinalLlamaForCausalLM
 
-    model = LlamaForCausalLM.from_pretrained(hf_model, torch_dtype=dtype)
+    model = LlamaForCausalLM.from_pretrained(
+        hf_model,
+        torch_dtype=dtype,
+        low_cpu_mem_usage=low_cpu_mem_usage,
+    )
     config = AutoConfig.from_pretrained(hf_model)
     attach_gated_attention_modules(model, gate_rank=gate_rank, gate_init_bias=gate_init_bias)
 
@@ -202,20 +214,21 @@ def main(
         param_reg.count_current_params(width_list)
 
     cfgs = convert_mlp_to_actual_moe(model, width_union_list, hn, dynamic_experts)
-    config.tomoe_moe_cfgs = cfgs
-    config.tomoe_gated_attn_rank = gate_rank
-    config.tomoe_gated_attn_init_bias = gate_init_bias
-    config.architectures = ["LlamaForCausalLM"]
-    config.auto_map = {
+    del hn
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    model.config.tomoe_moe_cfgs = cfgs
+    model.config.tomoe_gated_attn_rank = gate_rank
+    model.config.tomoe_gated_attn_init_bias = gate_init_bias
+    model.config.architectures = ["LlamaForCausalLM"]
+    model.config.auto_map = {
         "AutoModelForCausalLM": "modeling_llama_tomoe_gated_actual_moe.LlamaForCausalLM",
     }
 
-    FinalLlamaForCausalLM.cfgs = cfgs
-    final_model = FinalLlamaForCausalLM(config).to(dtype=dtype)
-    final_model.load_state_dict(model.state_dict(), strict=False)
-    final_model.register_for_auto_class("AutoModelForCausalLM")
-    final_model.save_pretrained(output_dir)
-    config.save_pretrained(output_dir)
+    model.save_pretrained(output_dir)
+    model.config.save_pretrained(output_dir)
 
     modeling_src = os.path.join(os.path.dirname(__file__), "models", "modeling_llama_tomoe_gated_actual_moe.py")
     shutil.copy2(modeling_src, os.path.join(output_dir, "modeling_llama_tomoe_gated_actual_moe.py"))
