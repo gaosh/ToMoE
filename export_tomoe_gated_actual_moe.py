@@ -133,10 +133,9 @@ def cleanup_old_weight_files(output_dir):
                     os.remove(path)
 
 
-def iter_final_tensors(model, width_union_list, hn, dynamic_experts):
+def build_mlp_export_plans(model, width_union_list, hn, dynamic_experts):
     _, hn_experts = get_hn_parts(hn)
     mlp_unions = [item for item in width_union_list if not isinstance(item, int) and item.sum().item() != 0]
-    mlp_prefixes = set()
     plans = []
 
     for layer_idx, layer in enumerate(model.model.layers):
@@ -147,8 +146,14 @@ def iter_final_tensors(model, width_union_list, hn, dynamic_experts):
             mid_index = torch.argmax(mid_vector).view(1)
         mid_dim = int(mid_index.numel())
         prefix = f"model.layers.{layer_idx}.mlp"
-        mlp_prefixes.add(prefix)
-        plans.append((layer_idx, module, mid_index, mid_dim, hn_experts.module_list[layer_idx]))
+        plans.append((layer_idx, prefix, module, mid_index, mid_dim, hn_experts.module_list[layer_idx]))
+
+    cfgs = [mid_dim for _, _, _, _, mid_dim, _ in plans] + [int(dynamic_experts)]
+    return plans, cfgs
+
+
+def iter_final_tensors(model, plans, dynamic_experts):
+    mlp_prefixes = {prefix for _, prefix, _, _, _, _ in plans}
 
     for name, tensor in model.state_dict().items():
         skip = False
@@ -163,8 +168,7 @@ def iter_final_tensors(model, width_union_list, hn, dynamic_experts):
         if not skip:
             yield name, tensor
 
-    for layer_idx, module, mid_index, mid_dim, source_expert in plans:
-        prefix = f"model.layers.{layer_idx}.mlp"
+    for _, prefix, module, mid_index, _, source_expert in plans:
         yield f"{prefix}.router.linear_router.weight", source_expert.linear_router.weight.detach()
         for expert_idx in range(dynamic_experts):
             expert_prefix = f"{prefix}.experts.{expert_idx}"
@@ -172,11 +176,8 @@ def iter_final_tensors(model, width_union_list, hn, dynamic_experts):
             yield f"{expert_prefix}.up_proj.weight", module.up_proj.weight.detach()[mid_index, :]
             yield f"{expert_prefix}.down_proj.weight", module.down_proj.weight.detach()[:, mid_index]
 
-    cfgs = [mid_dim for _, _, _, mid_dim, _ in plans] + [int(dynamic_experts)]
-    return cfgs
 
-
-def save_streamed_pretrained(model, width_union_list, hn, dynamic_experts, output_dir, max_shard_size):
+def save_streamed_pretrained(model, plans, dynamic_experts, output_dir, max_shard_size):
     os.makedirs(output_dir, exist_ok=True)
     cleanup_old_weight_files(output_dir)
 
@@ -216,14 +217,7 @@ def save_streamed_pretrained(model, width_union_list, hn, dynamic_experts, outpu
         shard_size = 0
         gc.collect()
 
-    cfgs = None
-    tensor_iter = iter_final_tensors(model, width_union_list, hn, dynamic_experts)
-    while True:
-        try:
-            name, tensor = next(tensor_iter)
-        except StopIteration as stop:
-            cfgs = stop.value
-            break
+    for name, tensor in iter_final_tensors(model, plans, dynamic_experts):
         tensor = tensor.detach().cpu().contiguous()
         nbytes = tensor_nbytes(tensor)
         if shard and shard_size + nbytes > max_shard_bytes:
@@ -260,7 +254,6 @@ def save_streamed_pretrained(model, width_union_list, hn, dynamic_experts, outpu
             indent=2,
             sort_keys=True,
         )
-    return cfgs
 
 
 def main(
@@ -316,18 +309,12 @@ def main(
         )
         param_reg.count_current_params(width_list)
 
-    cfgs = save_streamed_pretrained(
+    plans, cfgs = build_mlp_export_plans(
         model=model,
         width_union_list=width_union_list,
         hn=hn,
         dynamic_experts=dynamic_experts,
-        output_dir=output_dir,
-        max_shard_size=save_shard_size,
     )
-    del hn
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     model.config.tomoe_moe_cfgs = cfgs
     model.config.tomoe_gated_attn_rank = gate_rank
@@ -336,11 +323,23 @@ def main(
     model.config.auto_map = {
         "AutoModelForCausalLM": "modeling_llama_tomoe_gated_actual_moe.LlamaForCausalLM",
     }
-
+    os.makedirs(output_dir, exist_ok=True)
     model.config.save_pretrained(output_dir)
 
     modeling_src = os.path.join(os.path.dirname(__file__), "models", "modeling_llama_tomoe_gated_actual_moe.py")
     shutil.copy2(modeling_src, os.path.join(output_dir, "modeling_llama_tomoe_gated_actual_moe.py"))
+
+    save_streamed_pretrained(
+        model=model,
+        plans=plans,
+        dynamic_experts=dynamic_experts,
+        output_dir=output_dir,
+        max_shard_size=save_shard_size,
+    )
+    del hn
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     if save_tokenizer:
         tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
