@@ -144,16 +144,47 @@ def build_mlp_export_plans(model, width_union_list, hn, dynamic_experts):
         mid_index = (mid_vector > 0).nonzero(as_tuple=False).view(-1)
         if mid_index.numel() == 0:
             mid_index = torch.argmax(mid_vector).view(1)
-        mid_dim = int(mid_index.numel())
         prefix = f"model.layers.{layer_idx}.mlp"
-        plans.append((layer_idx, prefix, module, mid_index, mid_dim, hn_experts.module_list[layer_idx]))
+        source_expert = hn_experts.module_list[layer_idx]
+        source_eval = source_expert.experts_for_eval[:, mid_index].to(device=mid_index.device)
+        source_scores = getattr(source_expert, "binary_approx_for_eval", None)
+        if source_scores is None:
+            raise RuntimeError(
+                "HN expert does not expose binary_approx_for_eval. "
+                "Run hn_helper.prepare_for_eval before building export plans."
+            )
+        source_scores = source_scores[:, mid_index].to(device=mid_index.device)
+        selected_indices = []
+        for expert_idx in range(dynamic_experts):
+            expert_mask = source_eval[expert_idx] > 0
+            expert_index = mid_index[expert_mask]
+            if expert_index.numel() == 0:
+                expert_index = mid_index[source_scores[expert_idx].argmax().view(1)]
+            selected_indices.append(expert_index)
 
-    cfgs = [mid_dim for _, _, _, _, mid_dim, _ in plans] + [int(dynamic_experts)]
+        layer_width = max(int(expert_index.numel()) for expert_index in selected_indices)
+        expert_indices = []
+        for expert_idx, expert_index in enumerate(selected_indices):
+            if expert_index.numel() < layer_width:
+                selected_mask = torch.zeros(mid_index.numel(), dtype=torch.bool, device=mid_index.device)
+                selected_mask[(mid_index[:, None] == expert_index[None, :]).any(dim=1)] = True
+                remaining_scores = source_scores[expert_idx].masked_fill(selected_mask, float("-inf"))
+                pad_local_index = remaining_scores.topk(
+                    k=layer_width - expert_index.numel(),
+                    largest=True,
+                    sorted=True,
+                ).indices
+                pad_index = mid_index[pad_local_index]
+                expert_index = torch.cat([expert_index, pad_index], dim=0)
+            expert_indices.append(expert_index)
+        plans.append((layer_idx, prefix, module, expert_indices, source_expert))
+
+    cfgs = [int(plans[layer_idx][3][0].numel()) for layer_idx in range(len(plans))] + [int(dynamic_experts)]
     return plans, cfgs
 
 
 def iter_final_tensors(model, plans, dynamic_experts):
-    mlp_prefixes = {prefix for _, prefix, _, _, _, _ in plans}
+    mlp_prefixes = {prefix for _, prefix, _, _, _ in plans}
 
     for name, tensor in model.state_dict().items():
         skip = False
@@ -168,13 +199,14 @@ def iter_final_tensors(model, plans, dynamic_experts):
         if not skip:
             yield name, tensor
 
-    for _, prefix, module, mid_index, _, source_expert in plans:
+    for _, prefix, module, expert_indices, source_expert in plans:
         yield f"{prefix}.router.linear_router.weight", source_expert.linear_router.weight.detach()
         for expert_idx in range(dynamic_experts):
             expert_prefix = f"{prefix}.experts.{expert_idx}"
-            yield f"{expert_prefix}.gate_proj.weight", module.gate_proj.weight.detach()[mid_index, :]
-            yield f"{expert_prefix}.up_proj.weight", module.up_proj.weight.detach()[mid_index, :]
-            yield f"{expert_prefix}.down_proj.weight", module.down_proj.weight.detach()[:, mid_index]
+            expert_index = expert_indices[expert_idx]
+            yield f"{expert_prefix}.gate_proj.weight", module.gate_proj.weight.detach()[expert_index, :]
+            yield f"{expert_prefix}.up_proj.weight", module.up_proj.weight.detach()[expert_index, :]
+            yield f"{expert_prefix}.down_proj.weight", module.down_proj.weight.detach()[:, expert_index]
 
 
 def save_streamed_pretrained(model, plans, dynamic_experts, output_dir, max_shard_size):

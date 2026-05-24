@@ -1496,8 +1496,13 @@ def _parse_moe_cfgs(cfgs):
         layers = cfgs["layers"]
         parsed_layers = []
         for layer_cfg in layers:
-            dense_width = int(layer_cfg["dense_width"])
-            parsed_layers.append((dense_width, [dense_width for _ in range(num_experts)]))
+            if "width" in layer_cfg:
+                layer_width = int(layer_cfg["width"])
+            elif "expert_widths" in layer_cfg:
+                layer_width = max(int(width) for width in layer_cfg["expert_widths"])
+            else:
+                layer_width = int(layer_cfg["union_width"])
+            parsed_layers.append((layer_width, [layer_width for _ in range(num_experts)]))
         return num_experts, parsed_layers
 
     num_experts = int(cfgs[-1])

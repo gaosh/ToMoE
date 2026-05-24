@@ -283,6 +283,7 @@ class single_experts_module(nn.Module):
             out_before_binary = self.linear_decoder(F.gelu(self.ln(full_embeding)))
             #8xmiddle
             binary_approx = gumbel_sigmoid_function(out_before_binary, offset=self.base, tau=self.T, sample=True).squeeze()
+            self.binary_approx_for_eval = binary_approx.detach()
 
             binary = hard_sample(binary_approx)
             # binary = binary_approx
