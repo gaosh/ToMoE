@@ -7,7 +7,7 @@ cd "${SCRIPT_DIR}"
 
 PRETOKENIZE_SCRIPT="${SCRIPT_DIR}/pretokenize_all.bash"
 
-MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/orange/sgao1/sgao1/saved_models/gated_attn_llama3_8b_actual_moe}"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/orange/sgao1/sgao1/saved_models/tomoe_gated_actual_moe_llama3_8b}"
 OUTPUT_DIR="${OUTPUT_DIR:-/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b}"
 
 SEQ_LEN="${SEQ_LEN:-8192}"
