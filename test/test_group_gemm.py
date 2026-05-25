@@ -92,7 +92,7 @@ def run_case(
     splits_cpu = torch.tensor(
         splits_list,
         device="cpu",
-        dtype=torch.int32,
+        dtype=torch.int64,
     )
 
     total_tokens = int(splits_cpu.sum().item())
