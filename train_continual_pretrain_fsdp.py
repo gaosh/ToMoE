@@ -29,6 +29,7 @@ import json
 import math
 import os
 import shutil
+import sys
 import time
 from contextlib import nullcontext
 from functools import partial
@@ -82,6 +83,7 @@ def parse_args():
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--use_8bit_adam", action="store_true")
     parser.add_argument("--moe_aux_loss_weight", type=float, default=0.01)
+    parser.add_argument("--tomoe_moe_impl", type=str, default="naive", choices=["naive", "grouped_gemm"])
 
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--gradient_checkpointing", action="store_true")
@@ -295,7 +297,23 @@ def build_model(args, env):
         model.gradient_checkpointing_enable()
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
+    configure_tomoe_moe_impl(model, args.tomoe_moe_impl, env)
     return model
+
+
+def configure_tomoe_moe_impl(model, impl, env):
+    base = unwrap_model(model)
+    base.config.tomoe_moe_impl = impl
+    module = sys.modules.get(base.__class__.__module__)
+    setter = getattr(module, "set_tomoe_moe_impl", None) if module is not None else None
+    if setter is None:
+        if impl != "naive":
+            raise RuntimeError(
+                f"Loaded model code does not expose set_tomoe_moe_impl, cannot enable tomoe_moe_impl={impl!r}."
+            )
+        return
+    setter(base, impl)
+    env.print_master(f"ToMoE MoE implementation: {impl}")
 
 
 def resolve_transformer_layer_cls(model, class_name):
@@ -407,6 +425,17 @@ def copy_source_config(args, save_dir):
         shutil.copy2(source_config, os.path.join(save_dir, "config.json"))
 
 
+def write_training_config_overrides(args, save_dir):
+    config_path = os.path.join(save_dir, "config.json")
+    if not os.path.exists(config_path):
+        return
+    with open(config_path, "r", encoding="utf-8") as f:
+        config = json.load(f)
+    config["tomoe_moe_impl"] = args.tomoe_moe_impl
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, sort_keys=True)
+
+
 def save_checkpoint(
     model,
     tokenizer,
@@ -447,6 +476,7 @@ def save_checkpoint(
             tokenizer.save_pretrained(save_dir)
         copy_custom_code_files(args, save_dir)
         copy_source_config(args, save_dir)
+        write_training_config_overrides(args, save_dir)
         env.print_master(f"[checkpoint] copied source config to: {os.path.join(save_dir, 'config.json')}")
         validate_source_config_unchanged(source_config_path, source_config, env)
 

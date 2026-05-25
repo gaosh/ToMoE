@@ -22,6 +22,7 @@ SAVE_STEPS="${SAVE_STEPS:-20000}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
 MOE_AUX_LOSS_WEIGHT="${MOE_AUX_LOSS_WEIGHT:-0.01}"
+TOMOE_MOE_IMPL="${TOMOE_MOE_IMPL:-naive}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 COMPILE_MODEL="${COMPILE_MODEL:-0}"
 COMPILE_MODE="${COMPILE_MODE:-default}"
@@ -77,6 +78,7 @@ echo "[continual-pretrain] output: ${OUTPUT_DIR}"
 echo "[continual-pretrain] compile: ${COMPILE_MODEL} (${COMPILE_MODE})"
 echo "[continual-pretrain] attention: ${ATTN_IMPLEMENTATION}"
 echo "[continual-pretrain] moe_aux_loss_weight: ${MOE_AUX_LOSS_WEIGHT}"
+echo "[continual-pretrain] tomoe_moe_impl: ${TOMOE_MOE_IMPL}"
 echo "[continual-pretrain] data dirs:"
 printf '  %s\n' "${DATA_DIRS[@]}"
 
@@ -100,6 +102,7 @@ torchrun --nproc_per_node="${NPROC_PER_NODE}" train_continual_pretrain_fsdp.py \
     --use_8bit_adam \
     --attn_implementation "${ATTN_IMPLEMENTATION}" \
     --moe_aux_loss_weight "${MOE_AUX_LOSS_WEIGHT}" \
+    --tomoe_moe_impl "${TOMOE_MOE_IMPL}" \
     --fsdp_transformer_layer_cls_to_wrap "${FSDP_LAYER_CLS}" \
     --num_workers "${NUM_WORKERS}" \
     --logging_steps "${LOGGING_STEPS}" \

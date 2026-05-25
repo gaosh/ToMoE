@@ -40,6 +40,14 @@ if is_flash_attn_2_available():
     from flash_attn import flash_attn_func, flash_attn_varlen_func
     from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 
+try:
+    import grouped_gemm
+
+    _HAS_GROUPED_GEMM = True
+except Exception:
+    grouped_gemm = None
+    _HAS_GROUPED_GEMM = False
+
 
 logger = logging.get_logger(__name__)
 
@@ -106,6 +114,56 @@ class LlamaMlpExpert(nn.Module):
 
     def forward(self, x):
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+
+
+class GroupedSwiGLUExperts(nn.Module):
+    def __init__(self, num_experts, hidden_size, intermediate_size, hidden_act):
+        super().__init__()
+        self.num_experts = num_experts
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.act_fn = ACT2FN[hidden_act]
+        self.grouped_gate_w = nn.Parameter(torch.empty(num_experts, hidden_size, intermediate_size))
+        self.grouped_up_w = nn.Parameter(torch.empty(num_experts, hidden_size, intermediate_size))
+        self.grouped_down_w = nn.Parameter(torch.empty(num_experts, intermediate_size, hidden_size))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for weight in (self.grouped_gate_w, self.grouped_up_w, self.grouped_down_w):
+            nn.init.kaiming_uniform_(weight, a=math.sqrt(5))
+
+    @classmethod
+    def from_experts(cls, experts, hidden_act):
+        if len(experts) == 0:
+            raise ValueError("Cannot build grouped experts from an empty expert list.")
+        hidden_size = experts[0].hidden_size
+        intermediate_size = experts[0].intermediate_size
+        first_weight = experts[0].gate_proj.weight
+        grouped = cls(len(experts), hidden_size, intermediate_size, hidden_act).to(
+            device=first_weight.device,
+            dtype=first_weight.dtype,
+        )
+        with torch.no_grad():
+            for expert_idx, expert in enumerate(experts):
+                if expert.hidden_size != hidden_size or expert.intermediate_size != intermediate_size:
+                    raise ValueError(
+                        "tomoe_moe_impl='grouped_gemm' requires uniform expert widths within each layer."
+                    )
+                grouped.grouped_gate_w[expert_idx].copy_(expert.gate_proj.weight.t())
+                grouped.grouped_up_w[expert_idx].copy_(expert.up_proj.weight.t())
+                grouped.grouped_down_w[expert_idx].copy_(expert.down_proj.weight.t())
+        return grouped
+
+    def forward(self, sorted_tokens, tokens_per_expert_cpu):
+        if not _HAS_GROUPED_GEMM:
+            raise RuntimeError(
+                "tomoe_moe_impl='grouped_gemm' requires grouped_gemm. Please install grouped_gemm first."
+            )
+        tokens_per_expert_cpu = tokens_per_expert_cpu.to(device="cpu", dtype=torch.int64)
+        gate = grouped_gemm.ops.gmm(sorted_tokens, self.grouped_gate_w, tokens_per_expert_cpu)
+        up = grouped_gemm.ops.gmm(sorted_tokens, self.grouped_up_w, tokens_per_expert_cpu)
+        hidden = self.act_fn(gate) * up
+        return grouped_gemm.ops.gmm(hidden, self.grouped_down_w, tokens_per_expert_cpu)
 
 
 class SingleGatedAttnModule(nn.Module):
@@ -303,11 +361,77 @@ class LlamaMLP(nn.Module):
         self.act_fn = ACT2FN[config.hidden_act]
         self.router = None
         self.experts = nn.ModuleList()
+        self.grouped_experts = None
+        self.num_experts = 0
         self.actual_moe = False
+        self.tomoe_moe_impl = getattr(config, "tomoe_moe_impl", "naive")
+
+    def set_moe_impl(self, impl):
+        if impl not in ("naive", "grouped_gemm"):
+            raise ValueError(f"Unsupported tomoe_moe_impl={impl!r}; expected 'naive' or 'grouped_gemm'.")
+        if impl == "naive" and len(self.experts) == 0 and self.grouped_experts is not None:
+            experts = []
+            for expert_idx in range(self.grouped_experts.num_experts):
+                expert = LlamaMlpExpert(
+                    self.grouped_experts.hidden_size,
+                    self.grouped_experts.intermediate_size,
+                    self.config.hidden_act,
+                ).to(
+                    device=self.grouped_experts.grouped_gate_w.device,
+                    dtype=self.grouped_experts.grouped_gate_w.dtype,
+                )
+                with torch.no_grad():
+                    expert.gate_proj.weight.copy_(self.grouped_experts.grouped_gate_w[expert_idx].t())
+                    expert.up_proj.weight.copy_(self.grouped_experts.grouped_up_w[expert_idx].t())
+                    expert.down_proj.weight.copy_(self.grouped_experts.grouped_down_w[expert_idx].t())
+                experts.append(expert)
+            self.experts = nn.ModuleList(experts)
+            self.grouped_experts = None
+        if impl == "grouped_gemm":
+            if not _HAS_GROUPED_GEMM:
+                raise RuntimeError(
+                    "tomoe_moe_impl='grouped_gemm' requires grouped_gemm. Please install grouped_gemm first."
+                )
+            if self.grouped_experts is None:
+                self.grouped_experts = GroupedSwiGLUExperts.from_experts(
+                    self.experts,
+                    self.config.hidden_act,
+                )
+            self.experts = nn.ModuleList()
+        self.tomoe_moe_impl = impl
+
+    def _forward_actual_moe_naive(self, sorted_tokens, sorted_gate_scores, tokens_per_expert, x_dtype):
+        outputs = []
+        start_idx = 0
+        for expert_idx in range(len(self.experts)):
+            num_tokens = int(tokens_per_expert[expert_idx].item())
+            if num_tokens == 0:
+                continue
+
+            end_idx = start_idx + num_tokens
+
+            expert_input = sorted_tokens[start_idx:end_idx, :]
+            expert_gate = sorted_gate_scores[start_idx:end_idx].unsqueeze(-1)
+
+            expert_output = self.experts[expert_idx](expert_input)
+            expert_output = expert_output * expert_gate.to(dtype=expert_output.dtype)
+
+            outputs.append(expert_output)
+            start_idx = end_idx
+
+        return torch.cat(outputs, dim=0).to(dtype=x_dtype)
+
+    def _forward_actual_moe_grouped_gemm(self, sorted_tokens, sorted_gate_scores, tokens_per_expert, x_dtype):
+        if self.grouped_experts is None:
+            raise RuntimeError("tomoe_moe_impl='grouped_gemm' is enabled but grouped experts are not initialized.")
+        tokens_per_expert_cpu = tokens_per_expert.to(device="cpu", dtype=torch.int64)
+        outs = self.grouped_experts(sorted_tokens, tokens_per_expert_cpu)
+        outs = outs * sorted_gate_scores.unsqueeze(-1).to(dtype=outs.dtype)
+        return outs.to(dtype=x_dtype)
 
     def forward(self, x):
         router_logits = None
-        if self.router is not None and len(self.experts) > 0:
+        if self.router is not None and self.num_experts > 0:
             binary, router_logits = self.router(x)
 
             if self.actual_moe:
@@ -317,7 +441,7 @@ class LlamaMLP(nn.Module):
                 expert_ids = binary.reshape(-1).long()
 
                 # router_logits here is actually soft routing probability
-                router_probs = router_logits.reshape(-1, len(self.experts))
+                router_probs = router_logits.reshape(-1, self.num_experts)
 
                 gate_scores = router_probs.gather(
                     1, expert_ids.unsqueeze(1)
@@ -329,28 +453,23 @@ class LlamaMLP(nn.Module):
 
                 tokens_per_expert = torch.bincount(
                     sorted_expert_ids,
-                    minlength=len(self.experts),
+                    minlength=self.num_experts,
                 )
 
-                outputs = []
-                start_idx = 0
-                for expert_idx in range(len(self.experts)):
-                    num_tokens = int(tokens_per_expert[expert_idx].item())
-                    if num_tokens == 0:
-                        continue
-
-                    end_idx = start_idx + num_tokens
-
-                    expert_input = sorted_tokens[start_idx:end_idx, :]
-                    expert_gate = sorted_gate_scores[start_idx:end_idx].unsqueeze(-1)
-
-                    expert_output = self.experts[expert_idx](expert_input)
-                    expert_output = expert_output * expert_gate.to(dtype=expert_output.dtype)
-
-                    outputs.append(expert_output)
-                    start_idx = end_idx
-
-                outs = torch.cat(outputs, dim=0).to(dtype=x_flat.dtype)
+                if self.tomoe_moe_impl == "grouped_gemm":
+                    outs = self._forward_actual_moe_grouped_gemm(
+                        sorted_tokens,
+                        sorted_gate_scores,
+                        tokens_per_expert,
+                        x_flat.dtype,
+                    )
+                else:
+                    outs = self._forward_actual_moe_naive(
+                        sorted_tokens,
+                        sorted_gate_scores,
+                        tokens_per_expert,
+                        x_flat.dtype,
+                    )
 
                 new_x = torch.empty_like(x_flat)
                 new_x.index_copy_(0, idxs, outs)
@@ -1567,6 +1686,11 @@ def model_replace(model, cfgs):
     num_experts, mlp_layers = _parse_moe_cfgs(cfgs)
     if num_experts is None:
         return
+    moe_impl = getattr(model.config, "tomoe_moe_impl", "naive")
+    if moe_impl not in ("naive", "grouped_gemm"):
+        raise ValueError(f"Unsupported tomoe_moe_impl={moe_impl!r}; expected 'naive' or 'grouped_gemm'.")
+    if moe_impl == "grouped_gemm" and not _HAS_GROUPED_GEMM:
+        raise RuntimeError("tomoe_moe_impl='grouped_gemm' requires grouped_gemm. Please install grouped_gemm first.")
     mlp_index = 0
     for module in model.modules():
         if type(module).__name__ == "LlamaMLP":
@@ -1584,8 +1708,21 @@ def model_replace(model, cfgs):
                     for expert_width in expert_widths
                 ]
             )
+            module.num_experts = num_experts
             module.actual_moe = True
+            module.set_moe_impl(moe_impl)
             mlp_index += 1
+
+
+def set_tomoe_moe_impl(model, impl):
+    if impl not in ("naive", "grouped_gemm"):
+        raise ValueError(f"Unsupported tomoe_moe_impl={impl!r}; expected 'naive' or 'grouped_gemm'.")
+    if impl == "grouped_gemm" and not _HAS_GROUPED_GEMM:
+        raise RuntimeError("tomoe_moe_impl='grouped_gemm' requires grouped_gemm. Please install grouped_gemm first.")
+    model.config.tomoe_moe_impl = impl
+    for module in model.modules():
+        if type(module).__name__ == "LlamaMLP" and getattr(module, "actual_moe", False):
+            module.set_moe_impl(impl)
 
 
 def attach_gated_attention_modules(model, gate_rank=128, gate_init_bias=3.0):

@@ -414,6 +414,7 @@ def main(
     print_parameter_report(count_exported_actual_moe_parameters(model, plans, dynamic_experts))
 
     model.config.tomoe_moe_cfgs = cfgs
+    model.config.tomoe_moe_impl = "naive"
     model.config.tomoe_gated_attn_rank = gate_rank
     model.config.tomoe_gated_attn_init_bias = gate_init_bias
     model.config.architectures = ["LlamaForCausalLM"]
