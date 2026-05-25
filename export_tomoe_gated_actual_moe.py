@@ -2,73 +2,15 @@ import os
 import shutil
 import gc
 import json
-import math
 import re
 from collections import OrderedDict
 
 import torch
-import torch.nn.functional as F
-from datasets import load_dataset
-from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoTokenizer
 
 from tomoe.hypernetwork import experts_module_list, hn_module_list, hypernetwork
 from tomoe.pruning_helper import collect_info_reg_llama, help_functions_hn
 from utils import unwrap_model
-
-
-def load_eval_data(dataset_name: str) -> str:
-    if dataset_name == "wikitext":
-        testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-        return "\n\n".join(testdata["text"])
-    if dataset_name == "ptb":
-        testdata = load_dataset("ptb_text_only", "penn_treebank", split="test", trust_remote_code=True)
-        return "\n\n".join(testdata["sentence"])
-    if dataset_name == "c4":
-        testdata = load_dataset(
-            "allenai/c4",
-            "allenai--c4",
-            data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},
-            split="validation",
-        )
-        return " ".join(testdata[:1100]["text"])
-    raise ValueError("invalid dataset name (wikitext, ptb, c4 are allowed)")
-
-
-@torch.inference_mode()
-def evaluate_ppl(model, tokenizer, datasets="wikitext", block_size=2048, max_tokens=524288, device="cuda"):
-    model.eval()
-    model.to(device)
-    if device.startswith("cuda"):
-        model.bfloat16()
-
-    for dsname in datasets.split(","):
-        text = load_eval_data(dsname)
-        encoded_text = tokenizer.encode(text, return_tensors="pt")
-        if max_tokens is not None and max_tokens > 0:
-            encoded_text = encoded_text[:, :max_tokens]
-
-        nlls = 0.0
-        toks = 0
-        last_logits_shape = None
-        for start in range(0, encoded_text.shape[1] - 1, block_size):
-            inp = encoded_text[:, start : start + block_size].to(device=device, dtype=torch.long)
-            if inp.shape[1] < 2:
-                continue
-            output = model(inp)
-            logits = output.logits if hasattr(output, "logits") else output
-            nll = F.cross_entropy(
-                logits[0, :-1],
-                inp[0, 1:],
-                reduction="sum",
-            )
-            nlls += float(nll.item())
-            toks += inp.shape[1] - 1
-            last_logits_shape = tuple(logits.shape)
-
-        if toks == 0:
-            raise RuntimeError(f"No evaluation tokens for dataset={dsname}")
-        ppl = math.exp(nlls / toks)
-        print(f"[ppl] dataset={dsname} tokens={toks} logits_shape={last_logits_shape} ppl={ppl:.4f}")
 
 
 def infer_attention_metadata(model, config, param_reg=None):
@@ -291,19 +233,6 @@ def print_parameter_report(counts):
         print(f"{key}: {value / 1_000_000:.3f}M")
 
 
-def print_loaded_model_parameter_report(model, prefix="[loaded-model-parameter-count]"):
-    total_params = sum(param.numel() for param in model.parameters())
-    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
-    dtype_bytes = {}
-    for param in model.parameters():
-        dtype_bytes[param.dtype] = dtype_bytes.get(param.dtype, 0) + param.numel() * param.element_size()
-    print(prefix)
-    print(f"total_params: {total_params / 1_000_000:.3f}M")
-    print(f"trainable_params: {trainable_params / 1_000_000:.3f}M")
-    for dtype, nbytes in sorted(dtype_bytes.items(), key=lambda item: str(item[0])):
-        print(f"parameter_memory_{dtype}: {nbytes / (1024 ** 3):.3f}GiB")
-
-
 def print_cuda_memory(prefix):
     if not torch.cuda.is_available():
         return
@@ -432,12 +361,6 @@ def main(
     save_tokenizer: bool = True,
     low_cpu_mem_usage: bool = True,
     save_shard_size: str = "2GB",
-    test_ppl: bool = False,
-    ppl_datasets: str = "wikitext",
-    ppl_block_size: int = 2048,
-    ppl_max_tokens: int = 524288,
-    ppl_device: str = "cuda",
-    ppl_load_on_cpu: bool = True,
 ):
     dtype = {
         "float16": torch.float16,
@@ -515,44 +438,11 @@ def main(
     if save_tokenizer:
         tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
         tokenizer.save_pretrained(output_dir)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
 
-    if test_ppl:
-        if ppl_device.startswith("cuda") and not torch.cuda.is_available():
-            raise RuntimeError(f"Requested ppl_device={ppl_device}, but CUDA is not available.")
-        del model, hn, checkpoint, plans, vectors, width_list, width_union_list
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-        print_cuda_memory("before loading exported model for ppl")
-        print(f"[ppl] loading exported model from {output_dir}")
-        device_map = None
-        if ppl_device.startswith("cuda") and not ppl_load_on_cpu:
-            device_map = {"": ppl_device}
-        exported_model = AutoModelForCausalLM.from_pretrained(
-            output_dir,
-            trust_remote_code=True,
-            torch_dtype=dtype,
-            low_cpu_mem_usage=True,
-            device_map=device_map,
-        )
-        print_loaded_model_parameter_report(exported_model, prefix="[ppl-loaded-model-parameter-count]")
-        print_cuda_memory("after loading exported model for ppl")
-        evaluate_ppl(
-            exported_model,
-            tokenizer,
-            datasets=ppl_datasets,
-            block_size=ppl_block_size,
-            max_tokens=ppl_max_tokens,
-            device=ppl_device,
-        )
-    else:
-        del hn
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    del hn
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
