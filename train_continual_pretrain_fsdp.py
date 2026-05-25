@@ -537,6 +537,26 @@ def load_balancing_loss(router_logits):
     return torch.stack(losses).mean()
 
 
+def reduce_loss_stats(loss_sums, loss_count, device):
+    stats = torch.tensor(
+        [
+            loss_sums["total"],
+            loss_sums["lm"],
+            loss_sums["balance"],
+            float(loss_count),
+        ],
+        device=device,
+        dtype=torch.float64,
+    )
+    dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+    count = max(float(stats[3].item()), 1.0)
+    return {
+        "total": float((stats[0] / count).item()),
+        "lm": float((stats[1] / count).item()),
+        "balance": float((stats[2] / count).item()),
+    }
+
+
 def train(args):
     env = setup_distributed()
     torch.manual_seed(args.seed + env.global_rank)
@@ -590,11 +610,13 @@ def train(args):
 
     model.train()
     optimizer.zero_grad(set_to_none=True)
-    running_loss = 0.0
-    running_lm_loss = 0.0
-    running_balance_loss = 0.0
+    running_loss_sums = {
+        "total": 0.0,
+        "lm": 0.0,
+        "balance": 0.0,
+    }
+    running_loss_count = 0
     running_step_time = 0.0
-    running_micro_batches = 0
     log_tic = time.time()
     last_log_tokens = consumed_tokens
     dtype = torch.bfloat16 if args.bf16 else torch.float32
@@ -627,13 +649,16 @@ def train(args):
                     if balance_loss is None:
                         balance_loss = lm_loss.new_zeros(())
                     total_loss = lm_loss + args.moe_aux_loss_weight * balance_loss
-                    loss = total_loss / args.gradient_accumulation_steps
-                loss.backward()
+                    raw_lm_loss = lm_loss.detach()
+                    raw_balance_loss = balance_loss.detach()
+                    raw_total_loss = total_loss.detach()
+                    backward_loss = total_loss / args.gradient_accumulation_steps
+                backward_loss.backward()
 
-            running_loss += float(total_loss.detach().item())
-            running_lm_loss += float(lm_loss.detach().item())
-            running_balance_loss += float(balance_loss.detach().item())
-            running_micro_batches += 1
+            running_loss_sums["total"] += float(raw_total_loss.item())
+            running_loss_sums["lm"] += float(raw_lm_loss.item())
+            running_loss_sums["balance"] += float(raw_balance_loss.item())
+            running_loss_count += 1
 
             if not should_sync:
                 continue
@@ -655,10 +680,14 @@ def train(args):
                 token_delta = consumed_tokens - last_log_tokens
                 tokens_per_sec = token_delta / elapsed
                 lr = optimizer.param_groups[0]["lr"]
-                denom = max(1, running_micro_batches)
-                avg_loss = running_loss / denom
-                avg_lm_loss = running_lm_loss / denom
-                avg_balance_loss = running_balance_loss / denom
+                avg_losses = reduce_loss_stats(
+                    running_loss_sums,
+                    running_loss_count,
+                    device=torch.device("cuda", env.local_rank),
+                )
+                avg_loss = avg_losses["total"]
+                avg_lm_loss = avg_losses["lm"]
+                avg_balance_loss = avg_losses["balance"]
                 avg_aux_weighted = args.moe_aux_loss_weight * avg_balance_loss
                 avg_step_time = running_step_time / args.logging_steps
                 env.print_master(
@@ -668,11 +697,13 @@ def train(args):
                     f"step_time={avg_step_time:.3f}s tokens/sec={tokens_per_sec:.2f} "
                     f"consumed_tokens={consumed_tokens}"
                 )
-                running_loss = 0.0
-                running_lm_loss = 0.0
-                running_balance_loss = 0.0
+                running_loss_sums = {
+                    "total": 0.0,
+                    "lm": 0.0,
+                    "balance": 0.0,
+                }
+                running_loss_count = 0
                 running_step_time = 0.0
-                running_micro_batches = 0
                 log_tic = time.time()
                 last_log_tokens = consumed_tokens
 
