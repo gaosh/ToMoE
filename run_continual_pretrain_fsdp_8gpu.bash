@@ -22,7 +22,8 @@ SAVE_STEPS="${SAVE_STEPS:-20000}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
 MOE_AUX_LOSS_WEIGHT="${MOE_AUX_LOSS_WEIGHT:-0.01}"
-TOMOE_MOE_IMPL="${TOMOE_MOE_IMPL:-grouped_gemm }"
+TOMOE_MOE_IMPL="${TOMOE_MOE_IMPL:-grouped_gemm}"
+TOMOE_MOE_IMPL="$(printf '%s' "${TOMOE_MOE_IMPL}" | xargs)"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 COMPILE_MODEL="${COMPILE_MODEL:-0}"
 COMPILE_MODE="${COMPILE_MODE:-default}"
@@ -38,6 +39,11 @@ fi
 
 if [[ "${MODEL_NAME_OR_PATH}" = /* ]] && [ ! -d "${MODEL_NAME_OR_PATH}" ]; then
     echo "MODEL_NAME_OR_PATH is an absolute path but does not exist: ${MODEL_NAME_OR_PATH}" >&2
+    exit 1
+fi
+
+if [ "${TOMOE_MOE_IMPL}" != "naive" ] && [ "${TOMOE_MOE_IMPL}" != "grouped_gemm" ]; then
+    echo "TOMOE_MOE_IMPL must be 'naive' or 'grouped_gemm', got: ${TOMOE_MOE_IMPL}" >&2
     exit 1
 fi
 
