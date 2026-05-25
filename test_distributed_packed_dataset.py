@@ -1,14 +1,43 @@
 import argparse
 import os
+import sys
 import time
 
-import numpy as np
-import torch
-import torch.distributed as dist
-from torch.utils.data import ConcatDataset, DataLoader, DistributedSampler
+print(f"[dataset-test] python entry pid={os.getpid()} argv={sys.argv}", flush=True)
 
-from data.dataloader_packed import PackedTokenDataset
-from utils import DistributedEnv
+np = None
+torch = None
+dist = None
+ConcatDataset = None
+DataLoader = None
+DistributedSampler = None
+PackedTokenDataset = None
+DistributedEnv = None
+
+
+def lazy_imports():
+    global np, torch, dist, ConcatDataset, DataLoader, DistributedSampler, PackedTokenDataset, DistributedEnv
+    tic = time.time()
+    print("[dataset-test] importing numpy/torch/dataset modules", flush=True)
+    import numpy as _np
+    import torch as _torch
+    import torch.distributed as _dist
+    from torch.utils.data import ConcatDataset as _ConcatDataset
+    from torch.utils.data import DataLoader as _DataLoader
+    from torch.utils.data import DistributedSampler as _DistributedSampler
+
+    from data.dataloader_packed import PackedTokenDataset as _PackedTokenDataset
+    from utils import DistributedEnv as _DistributedEnv
+
+    np = _np
+    torch = _torch
+    dist = _dist
+    ConcatDataset = _ConcatDataset
+    DataLoader = _DataLoader
+    DistributedSampler = _DistributedSampler
+    PackedTokenDataset = _PackedTokenDataset
+    DistributedEnv = _DistributedEnv
+    print(f"[dataset-test] imports done in {time.time() - tic:.2f}s", flush=True)
 
 
 def dtype_from_name(name):
@@ -54,7 +83,8 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    print("[dataset-test] starting python process", flush=True)
+    print("[dataset-test] parsed args", flush=True)
+    lazy_imports()
     env = DistributedEnv()
     print(f"[rank:{env.global_rank}] before init_process_group", flush=True)
     dist.init_process_group("nccl", rank=env.global_rank, world_size=env.world_size)

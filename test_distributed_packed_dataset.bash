@@ -29,7 +29,9 @@ fi
 echo "[dataset-test] data dirs:"
 printf '  %s\n' "${DATA_DIRS[@]}"
 
-PYTHONUNBUFFERED=1 torchrun --nproc_per_node="${NPROC_PER_NODE}" test_distributed_packed_dataset.py \
+echo "[dataset-test] launching torchrun with ${NPROC_PER_NODE} processes"
+
+PYTHONUNBUFFERED=1 torchrun --standalone --nnodes=1 --nproc_per_node="${NPROC_PER_NODE}" test_distributed_packed_dataset.py \
     --data_dirs "${DATA_DIRS[@]}" \
     --seq_len "${SEQ_LEN}" \
     --batch_size "${BATCH_SIZE}" \
