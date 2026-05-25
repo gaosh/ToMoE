@@ -23,9 +23,10 @@ NUM_WORKERS="${NUM_WORKERS:-4}"
 FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
 MOE_AUX_LOSS_WEIGHT="${MOE_AUX_LOSS_WEIGHT:-0.01}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
-COMPILE_MODEL="${COMPILE_MODEL:-1}"
+COMPILE_MODEL="${COMPILE_MODEL:-0}"
 COMPILE_MODE="${COMPILE_MODE:-default}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
+SYNC_CUSTOM_CODE="${SYNC_CUSTOM_CODE:-1}"
 
 if [ -z "${MODEL_NAME_OR_PATH}" ] || [ "${MODEL_NAME_OR_PATH}" = "/path/to/tomoe_or_llama_model" ]; then
     echo "Please set MODEL_NAME_OR_PATH to the real HF/local model directory before launching." >&2
@@ -37,6 +38,15 @@ fi
 if [[ "${MODEL_NAME_OR_PATH}" = /* ]] && [ ! -d "${MODEL_NAME_OR_PATH}" ]; then
     echo "MODEL_NAME_OR_PATH is an absolute path but does not exist: ${MODEL_NAME_OR_PATH}" >&2
     exit 1
+fi
+
+if [ "${SYNC_CUSTOM_CODE}" = "1" ] && [ -d "${MODEL_NAME_OR_PATH}" ]; then
+    MODELING_SRC="${SCRIPT_DIR}/models/modeling_llama_tomoe_gated_actual_moe.py"
+    MODELING_DST="${MODEL_NAME_OR_PATH}/modeling_llama_tomoe_gated_actual_moe.py"
+    if [ -f "${MODELING_DST}" ]; then
+        echo "[continual-pretrain] syncing custom modeling code: ${MODELING_DST}"
+        cp "${MODELING_SRC}" "${MODELING_DST}"
+    fi
 fi
 
 MODEL_REALPATH="$(realpath "${MODEL_NAME_OR_PATH}")"

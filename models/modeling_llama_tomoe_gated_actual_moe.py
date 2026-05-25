@@ -50,11 +50,14 @@ def sample_gumbel(shape, eps=1e-20):
     uniform = torch.rand(shape)
     return -torch.log(-torch.log(uniform + eps) + eps)
 
+def sample_gumbel_like(logits, eps=1e-20):
+    uniform = torch.rand_like(logits)
+    return -torch.log(-torch.log(uniform + eps) + eps)
 
 def gumbel_softmax_sample(logits, temperature, sample=True):
-    gumbel_sample = sample_gumbel(logits.size()).to(logits.device)
-    y = logits + gumbel_sample if sample else logits
-    return F.softmax(y / temperature, dim=-1)
+    if sample:
+        logits = logits + sample_gumbel_like(logits)
+    return F.softmax(logits / temperature, dim=-1)
 
 
 def gumbel_softmax(logits, temperature, hard_sample=False, return_soft=False, sample=True):
@@ -342,12 +345,12 @@ class LlamaMLP(nn.Module):
                     expert_gate = sorted_gate_scores[start_idx:end_idx].unsqueeze(-1)
 
                     expert_output = self.experts[expert_idx](expert_input)
-                    expert_output = expert_output * expert_gate
+                    expert_output = expert_output * expert_gate.to(dtype=expert_output.dtype)
 
                     outputs.append(expert_output)
                     start_idx = end_idx
 
-                outs = torch.cat(outputs, dim=0)
+                outs = torch.cat(outputs, dim=0).to(dtype=x_flat.dtype)
 
                 new_x = torch.empty_like(x_flat)
                 new_x.index_copy_(0, idxs, outs)
