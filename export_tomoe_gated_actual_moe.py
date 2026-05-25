@@ -2,15 +2,73 @@ import os
 import shutil
 import gc
 import json
+import math
 import re
 from collections import OrderedDict
 
 import torch
-from transformers import AutoConfig, AutoTokenizer
+import torch.nn.functional as F
+from datasets import load_dataset
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 from tomoe.hypernetwork import experts_module_list, hn_module_list, hypernetwork
 from tomoe.pruning_helper import collect_info_reg_llama, help_functions_hn
 from utils import unwrap_model
+
+
+def load_eval_data(dataset_name: str) -> str:
+    if dataset_name == "wikitext":
+        testdata = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        return "\n\n".join(testdata["text"])
+    if dataset_name == "ptb":
+        testdata = load_dataset("ptb_text_only", "penn_treebank", split="test", trust_remote_code=True)
+        return "\n\n".join(testdata["sentence"])
+    if dataset_name == "c4":
+        testdata = load_dataset(
+            "allenai/c4",
+            "allenai--c4",
+            data_files={"validation": "en/c4-validation.00000-of-00008.json.gz"},
+            split="validation",
+        )
+        return " ".join(testdata[:1100]["text"])
+    raise ValueError("invalid dataset name (wikitext, ptb, c4 are allowed)")
+
+
+@torch.inference_mode()
+def evaluate_ppl(model, tokenizer, datasets="wikitext", block_size=2048, max_tokens=524288, device="cuda"):
+    model.eval()
+    model.to(device)
+    if device.startswith("cuda"):
+        model.bfloat16()
+
+    for dsname in datasets.split(","):
+        text = load_eval_data(dsname)
+        encoded_text = tokenizer.encode(text, return_tensors="pt")
+        if max_tokens is not None and max_tokens > 0:
+            encoded_text = encoded_text[:, :max_tokens]
+
+        nlls = 0.0
+        toks = 0
+        last_logits_shape = None
+        for start in range(0, encoded_text.shape[1] - 1, block_size):
+            inp = encoded_text[:, start : start + block_size].to(device=device, dtype=torch.long)
+            if inp.shape[1] < 2:
+                continue
+            output = model(inp)
+            logits = output.logits if hasattr(output, "logits") else output
+            nll = F.cross_entropy(
+                logits[0, :-1],
+                inp[0, 1:],
+                reduction="sum",
+            )
+            nlls += float(nll.item())
+            toks += inp.shape[1] - 1
+            last_logits_shape = tuple(logits.shape)
+
+        if toks == 0:
+            raise RuntimeError(f"No evaluation tokens for dataset={dsname}")
+        ppl = math.exp(nlls / toks)
+        print(f"[ppl] dataset={dsname} tokens={toks} logits_shape={last_logits_shape} ppl={ppl:.4f}")
 
 
 def infer_attention_metadata(model, config, param_reg=None):
@@ -299,6 +357,11 @@ def main(
     save_tokenizer: bool = True,
     low_cpu_mem_usage: bool = True,
     save_shard_size: str = "2GB",
+    test_ppl: bool = False,
+    ppl_datasets: str = "wikitext",
+    ppl_block_size: int = 2048,
+    ppl_max_tokens: int = 524288,
+    ppl_device: str = "cuda",
 ):
     dtype = {
         "float16": torch.float16,
@@ -376,6 +439,28 @@ def main(
     if save_tokenizer:
         tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
         tokenizer.save_pretrained(output_dir)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
+
+    if test_ppl:
+        if ppl_device.startswith("cuda") and not torch.cuda.is_available():
+            raise RuntimeError(f"Requested ppl_device={ppl_device}, but CUDA is not available.")
+        print(f"[ppl] loading exported model from {output_dir}")
+        exported_model = AutoModelForCausalLM.from_pretrained(
+            output_dir,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+            low_cpu_mem_usage=True,
+            device_map={"": ppl_device} if ppl_device.startswith("cuda") else None,
+        )
+        evaluate_ppl(
+            exported_model,
+            tokenizer,
+            datasets=ppl_datasets,
+            block_size=ppl_block_size,
+            max_tokens=ppl_max_tokens,
+            device=ppl_device,
+        )
 
 
 if __name__ == "__main__":

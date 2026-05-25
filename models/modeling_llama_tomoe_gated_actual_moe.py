@@ -16,6 +16,8 @@ from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
     CausalLMOutputWithPast,
+    MoeModelOutputWithPast,
+    MoeCausalLMOutputWithPast,
     QuestionAnsweringModelOutput,
     SequenceClassifierOutputWithPast,
 )
@@ -845,6 +847,7 @@ class LlamaDecoderLayer(nn.Module):
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
+        output_router_logits: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         gated_attn: Optional[nn.Module] = None,
@@ -902,6 +905,9 @@ class LlamaDecoderLayer(nn.Module):
 
         if use_cache:
             outputs += (present_key_value,)
+
+        if output_router_logits:
+            outputs += (router_logits,)
 
         return outputs
 
@@ -1088,13 +1094,15 @@ class LlamaModel(LlamaPreTrainedModel):
         gated_attns: Optional[nn.Module] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
+        output_router_logits: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-    ) -> Union[Tuple, BaseModelOutputWithPast]:
+    ) -> Union[Tuple, MoeModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
+        output_router_logits = output_router_logits if output_router_logits is not None else False
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
@@ -1138,6 +1146,7 @@ class LlamaModel(LlamaPreTrainedModel):
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
+        all_router_logits = () if output_router_logits else None
         next_decoder_cache = None
 
         for layer_idx, decoder_layer in enumerate(self.layers):
@@ -1153,6 +1162,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     position_ids,
                     past_key_values,
                     output_attentions,
+                    output_router_logits,
                     use_cache,
                     cache_position,
                     gated_attn,
@@ -1164,6 +1174,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     position_ids=position_ids,
                     past_key_value=past_key_values,
                     output_attentions=output_attentions,
+                    output_router_logits=output_router_logits,
                     use_cache=use_cache,
                     cache_position=cache_position,
                     gated_attn=gated_attn,
@@ -1177,6 +1188,9 @@ class LlamaModel(LlamaPreTrainedModel):
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
 
+            if output_router_logits:
+                all_router_logits += (layer_outputs[-1],)
+
         hidden_states = self.norm(hidden_states)
 
         # add hidden states from the last decoder layer
@@ -1189,12 +1203,13 @@ class LlamaModel(LlamaPreTrainedModel):
                 next_decoder_cache.to_legacy_cache() if isinstance(next_decoder_cache, Cache) else next_decoder_cache
             )
         if not return_dict:
-            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
-        return BaseModelOutputWithPast(
+            return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns, all_router_logits] if v is not None)
+        return MoeModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
             hidden_states=all_hidden_states,
             attentions=all_self_attns,
+            router_logits=all_router_logits,
         )
 
     # TODO: As of torch==2.2.0, the `attention_mask` passed to the model in `generate` is 2D and of dynamic length even when the static
@@ -1312,10 +1327,11 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
+        output_router_logits: Optional[bool] = None,
         gated_attns: Optional[nn.Module] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
+    ) -> Union[Tuple, MoeCausalLMOutputWithPast]:
         r"""
         Args:
             labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
@@ -1358,6 +1374,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             gated_attns=gated_attns,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            output_router_logits=output_router_logits,
             return_dict=return_dict,
             cache_position=cache_position,
         )
@@ -1388,12 +1405,13 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        return CausalLMOutputWithPast(
+        return MoeCausalLMOutputWithPast(
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
+            router_logits=outputs.router_logits,
         )
 
     def prepare_inputs_for_generation(

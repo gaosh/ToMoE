@@ -81,6 +81,7 @@ def parse_args():
     parser.add_argument("--num_train_epochs", type=int, default=1)
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--use_8bit_adam", action="store_true")
+    parser.add_argument("--moe_aux_loss_weight", type=float, default=0.01)
 
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--gradient_checkpointing", action="store_true")
@@ -511,6 +512,31 @@ def maybe_compile_model(model, args, env):
     return compiled
 
 
+def load_balancing_loss(router_logits):
+    if router_logits is None:
+        return None
+    if torch.is_tensor(router_logits):
+        router_logits = (router_logits,)
+    losses = []
+    for layer_router in router_logits:
+        if layer_router is None:
+            continue
+        router_probs = layer_router.float()
+        if router_probs.numel() == 0:
+            continue
+        if router_probs.min() < 0 or router_probs.max() > 1.0:
+            router_probs = torch.softmax(router_probs, dim=-1)
+        num_experts = router_probs.shape[-1]
+        selected_experts = torch.argmax(router_probs, dim=-1)
+        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=num_experts).float()
+        tokens_per_expert = expert_mask.mean(dim=0)
+        router_prob_per_expert = router_probs.mean(dim=0)
+        losses.append(num_experts * torch.sum(tokens_per_expert * router_prob_per_expert))
+    if not losses:
+        return None
+    return torch.stack(losses).mean()
+
+
 def train(args):
     env = setup_distributed()
     torch.manual_seed(args.seed + env.global_rank)
@@ -565,9 +591,14 @@ def train(args):
     model.train()
     optimizer.zero_grad(set_to_none=True)
     running_loss = 0.0
+    running_lm_loss = 0.0
+    running_balance_loss = 0.0
+    running_step_time = 0.0
+    running_micro_batches = 0
     log_tic = time.time()
     last_log_tokens = consumed_tokens
     dtype = torch.bfloat16 if args.bf16 else torch.float32
+    optimizer_step_tic = time.time()
 
     has_step_limit = args.effective_max_steps is not None
     total_epochs = args.num_train_epochs if not has_step_limit else 10**9
@@ -586,11 +617,23 @@ def train(args):
 
             with sync_context:
                 with autocast(device_type="cuda", dtype=dtype, enabled=args.bf16):
-                    outputs = model(input_ids=input_ids, labels=labels)
-                    loss = outputs.loss / args.gradient_accumulation_steps
+                    outputs = model(
+                        input_ids=input_ids,
+                        labels=labels,
+                        output_router_logits=args.moe_aux_loss_weight > 0,
+                    )
+                    lm_loss = outputs.loss
+                    balance_loss = load_balancing_loss(getattr(outputs, "router_logits", None))
+                    if balance_loss is None:
+                        balance_loss = lm_loss.new_zeros(())
+                    total_loss = lm_loss + args.moe_aux_loss_weight * balance_loss
+                    loss = total_loss / args.gradient_accumulation_steps
                 loss.backward()
 
-            running_loss += float(loss.detach().item()) * args.gradient_accumulation_steps
+            running_loss += float(total_loss.detach().item())
+            running_lm_loss += float(lm_loss.detach().item())
+            running_balance_loss += float(balance_loss.detach().item())
+            running_micro_batches += 1
 
             if not should_sync:
                 continue
@@ -604,18 +647,32 @@ def train(args):
 
             global_step += 1
             consumed_tokens = consumed_tokens_for_step(global_step, args, env)
+            running_step_time += time.time() - optimizer_step_tic
+            optimizer_step_tic = time.time()
 
             if args.logging_steps > 0 and global_step % args.logging_steps == 0:
                 elapsed = max(time.time() - log_tic, 1e-6)
                 token_delta = consumed_tokens - last_log_tokens
                 tokens_per_sec = token_delta / elapsed
                 lr = optimizer.param_groups[0]["lr"]
-                avg_loss = running_loss / args.logging_steps
+                denom = max(1, running_micro_batches)
+                avg_loss = running_loss / denom
+                avg_lm_loss = running_lm_loss / denom
+                avg_balance_loss = running_balance_loss / denom
+                avg_aux_weighted = args.moe_aux_loss_weight * avg_balance_loss
+                avg_step_time = running_step_time / args.logging_steps
                 env.print_master(
-                    f"global_step={global_step} loss={avg_loss:.4f} lr={lr:.3e} "
-                    f"tokens/sec={tokens_per_sec:.2f} consumed_tokens={consumed_tokens}"
+                    f"global_step={global_step} total_loss={avg_loss:.4f} "
+                    f"lm_loss={avg_lm_loss:.4f} load_balance_loss={avg_balance_loss:.4f} "
+                    f"weighted_load_balance={avg_aux_weighted:.4f} lr={lr:.3e} "
+                    f"step_time={avg_step_time:.3f}s tokens/sec={tokens_per_sec:.2f} "
+                    f"consumed_tokens={consumed_tokens}"
                 )
                 running_loss = 0.0
+                running_lm_loss = 0.0
+                running_balance_loss = 0.0
+                running_step_time = 0.0
+                running_micro_batches = 0
                 log_tic = time.time()
                 last_log_tokens = consumed_tokens
 
