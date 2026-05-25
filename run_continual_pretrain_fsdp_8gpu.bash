@@ -19,7 +19,7 @@ WARMUP_STEPS="${WARMUP_STEPS:-1000}"
 MAX_TRAIN_TOKENS="${MAX_TRAIN_TOKENS:-25B}"
 LOGGING_STEPS="${LOGGING_STEPS:-10}"
 SAVE_STEPS="${SAVE_STEPS:-20000}"
-NUM_WORKERS="${NUM_WORKERS:-1}"
+NUM_WORKERS="${NUM_WORKERS:-2}"
 FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 COMPILE_MODEL="${COMPILE_MODEL:-1}"
@@ -85,7 +85,6 @@ torchrun --nproc_per_node="${NPROC_PER_NODE}" train_continual_pretrain_fsdp.py \
     --warmup_steps "${WARMUP_STEPS}" \
     --max_train_tokens "${MAX_TRAIN_TOKENS}" \
     --bf16 \
-    --gradient_checkpointing \
     --use_8bit_adam \
     --attn_implementation "${ATTN_IMPLEMENTATION}" \
     --fsdp_transformer_layer_cls_to_wrap "${FSDP_LAYER_CLS}" \
@@ -93,3 +92,4 @@ torchrun --nproc_per_node="${NPROC_PER_NODE}" train_continual_pretrain_fsdp.py \
     --logging_steps "${LOGGING_STEPS}" \
     --save_steps "${SAVE_STEPS}" \
     "${EXTRA_ARGS[@]}"
+#    --gradient_checkpointing \
