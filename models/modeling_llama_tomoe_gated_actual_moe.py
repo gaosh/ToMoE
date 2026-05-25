@@ -1,5 +1,6 @@
 """PyTorch LLaMA model."""
 
+import gc
 import math
 import warnings
 from typing import List, Optional, Tuple, Union
@@ -397,6 +398,9 @@ class LlamaMLP(nn.Module):
                     self.experts,
                     self.config.hidden_act,
                 )
+            for expert in self.experts:
+                for name in ("gate_proj", "up_proj", "down_proj"):
+                    setattr(expert, name, None)
             self.experts = nn.ModuleList()
         self.tomoe_moe_impl = impl
 
@@ -1723,6 +1727,7 @@ def set_tomoe_moe_impl(model, impl):
     for module in model.modules():
         if type(module).__name__ == "LlamaMLP" and getattr(module, "actual_moe", False):
             module.set_moe_impl(impl)
+            gc.collect()
 
 
 def attach_gated_attention_modules(model, gate_rank=128, gate_init_bias=3.0):

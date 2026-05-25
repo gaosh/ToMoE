@@ -24,6 +24,7 @@ torchrun --nproc_per_node=8 train_continual_pretrain_fsdp.py \
 
 import argparse
 import datetime
+import gc
 import glob
 import json
 import math
@@ -86,6 +87,11 @@ def parse_args():
     parser.add_argument("--tomoe_moe_impl", type=str, default="naive", choices=["naive", "grouped_gemm"])
 
     parser.add_argument("--bf16", action="store_true")
+    parser.add_argument(
+        "--load_model_on_gpu",
+        action="store_true",
+        help="Load the full model directly onto each rank's GPU before FSDP wrapping to reduce CPU RAM peak.",
+    )
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--compile_model", action="store_true")
     parser.add_argument("--compile_mode", type=str, default="default")
@@ -283,8 +289,12 @@ def build_model(args, env):
     model_kwargs = {}
     if attn_implementation != "none":
         model_kwargs["attn_implementation"] = attn_implementation
+    if args.load_model_on_gpu:
+        model_kwargs["device_map"] = {"": env.local_rank}
     env.print_master(f"Attention implementation: {attn_implementation}")
     env.print_master(f"Loading model from: {load_path}")
+    if args.load_model_on_gpu:
+        env.print_master("Loading full model directly onto each rank GPU before FSDP wrapping.")
     model = AutoModelForCausalLM.from_pretrained(
         load_path,
         torch_dtype=dtype,
@@ -313,6 +323,9 @@ def configure_tomoe_moe_impl(model, impl, env):
             )
         return
     setter(base, impl)
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     env.print_master(f"ToMoE MoE implementation: {impl}")
 
 

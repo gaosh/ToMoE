@@ -7,6 +7,10 @@ cd "${SCRIPT_DIR}"
 
 PRETOKENIZE_SCRIPT="${SCRIPT_DIR}/pretokenize_all.bash"
 
+export PYTHONUNBUFFERED=1
+export TOKENIZERS_PARALLELISM=false
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
 MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/orange/sgao1/sgao1/saved_models/tomoe_gated_actual_moe_llama3_8b}"
 OUTPUT_DIR="${OUTPUT_DIR:-/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b}"
 
@@ -19,7 +23,7 @@ WARMUP_STEPS="${WARMUP_STEPS:-1000}"
 MAX_TRAIN_TOKENS="${MAX_TRAIN_TOKENS:-25B}"
 LOGGING_STEPS="${LOGGING_STEPS:-10}"
 SAVE_STEPS="${SAVE_STEPS:-20000}"
-NUM_WORKERS="${NUM_WORKERS:-4}"
+NUM_WORKERS="${NUM_WORKERS:-2}"
 FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
 MOE_AUX_LOSS_WEIGHT="${MOE_AUX_LOSS_WEIGHT:-0.01}"
 TOMOE_MOE_IMPL="${TOMOE_MOE_IMPL:-grouped_gemm}"
@@ -30,6 +34,7 @@ COMPILE_MODEL="${COMPILE_MODEL:-0}"
 COMPILE_MODE="${COMPILE_MODE:-default}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
 SYNC_CUSTOM_CODE="${SYNC_CUSTOM_CODE:-1}"
+LOAD_MODEL_ON_GPU="${LOAD_MODEL_ON_GPU:-1}"
 
 if [ -z "${MODEL_NAME_OR_PATH}" ] || [ "${MODEL_NAME_OR_PATH}" = "/path/to/tomoe_or_llama_model" ]; then
     echo "Please set MODEL_NAME_OR_PATH to the real HF/local model directory before launching." >&2
@@ -86,6 +91,7 @@ echo "[continual-pretrain] compile: ${COMPILE_MODEL} (${COMPILE_MODE})"
 echo "[continual-pretrain] attention: ${ATTN_IMPLEMENTATION}"
 echo "[continual-pretrain] moe_aux_loss_weight: ${MOE_AUX_LOSS_WEIGHT}"
 echo "[continual-pretrain] tomoe_moe_impl: ${TOMOE_MOE_IMPL}"
+echo "[continual-pretrain] load_model_on_gpu: ${LOAD_MODEL_ON_GPU}"
 echo "[continual-pretrain] master_port: ${MASTER_PORT}"
 echo "[continual-pretrain] data dirs:"
 printf '  %s\n' "${DATA_DIRS[@]}"
@@ -93,6 +99,9 @@ printf '  %s\n' "${DATA_DIRS[@]}"
 EXTRA_ARGS=()
 if [ "${COMPILE_MODEL}" = "1" ]; then
     EXTRA_ARGS+=(--compile_model --compile_mode "${COMPILE_MODE}")
+fi
+if [ "${LOAD_MODEL_ON_GPU}" = "1" ]; then
+    EXTRA_ARGS+=(--load_model_on_gpu)
 fi
 
 torchrun --nproc_per_node="${NPROC_PER_NODE}" --master_port="${MASTER_PORT}" train_continual_pretrain_fsdp.py \
