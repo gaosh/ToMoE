@@ -86,6 +86,12 @@ def parse_args():
     parser.add_argument("--gradient_checkpointing", action="store_true")
     parser.add_argument("--compile_model", action="store_true")
     parser.add_argument("--compile_mode", type=str, default="default")
+    parser.add_argument(
+        "--attn_implementation",
+        type=str,
+        default="flash_attention_2",
+        choices=["flash_attention_2", "sdpa", "eager", "auto", "none"],
+    )
     parser.add_argument("--fsdp_transformer_layer_cls_to_wrap", type=str, default="LlamaDecoderLayer")
 
     parser.add_argument("--logging_steps", type=int, default=10)
@@ -268,12 +274,20 @@ def build_model(args, env):
     load_path = args.resume_from_checkpoint or args.model_name_or_path
     validate_model_name_or_path(load_path)
     dtype = torch.bfloat16 if args.bf16 else None
+    attn_implementation = args.attn_implementation
+    if attn_implementation == "auto":
+        attn_implementation = "flash_attention_2" if args.bf16 else "sdpa"
+    model_kwargs = {}
+    if attn_implementation != "none":
+        model_kwargs["attn_implementation"] = attn_implementation
+    env.print_master(f"Attention implementation: {attn_implementation}")
     env.print_master(f"Loading model from: {load_path}")
     model = AutoModelForCausalLM.from_pretrained(
         load_path,
         torch_dtype=dtype,
         trust_remote_code=True,
         low_cpu_mem_usage=True,
+        **model_kwargs,
     )
     model.config.use_cache = False
     if args.gradient_checkpointing:

@@ -24,6 +24,7 @@ FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-4}"
 COMPILE_MODEL="${COMPILE_MODEL:-1}"
 COMPILE_MODE="${COMPILE_MODE:-default}"
+ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
 
 if [ -z "${MODEL_NAME_OR_PATH}" ] || [ "${MODEL_NAME_OR_PATH}" = "/path/to/tomoe_or_llama_model" ]; then
     echo "Please set MODEL_NAME_OR_PATH to the real HF/local model directory before launching." >&2
@@ -63,6 +64,7 @@ fi
 echo "[continual-pretrain] model: ${MODEL_NAME_OR_PATH}"
 echo "[continual-pretrain] output: ${OUTPUT_DIR}"
 echo "[continual-pretrain] compile: ${COMPILE_MODEL} (${COMPILE_MODE})"
+echo "[continual-pretrain] attention: ${ATTN_IMPLEMENTATION}"
 echo "[continual-pretrain] data dirs:"
 printf '  %s\n' "${DATA_DIRS[@]}"
 
@@ -85,6 +87,7 @@ torchrun --nproc_per_node="${NPROC_PER_NODE}" train_continual_pretrain_fsdp.py \
     --bf16 \
     --gradient_checkpointing \
     --use_8bit_adam \
+    --attn_implementation "${ATTN_IMPLEMENTATION}" \
     --fsdp_transformer_layer_cls_to_wrap "${FSDP_LAYER_CLS}" \
     --num_workers "${NUM_WORKERS}" \
     --logging_steps "${LOGGING_STEPS}" \
