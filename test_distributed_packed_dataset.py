@@ -1,5 +1,6 @@
 import argparse
 import os
+import time
 
 import numpy as np
 import torch
@@ -20,16 +21,22 @@ def dtype_from_name(name):
 
 
 def build_dataset(data_dirs, seq_len, file_pattern, data_dtype):
-    datasets = [
-        PackedTokenDataset(
+    datasets = []
+    for data_dir in data_dirs:
+        tic = time.time()
+        print(f"[dataset-build] loading {data_dir}", flush=True)
+        dataset = PackedTokenDataset(
             data_dir=data_dir,
             seq_len=seq_len,
             file_pattern=file_pattern,
             dtype=dtype_from_name(data_dtype),
             shuffle_shards=False,
         )
-        for data_dir in data_dirs
-    ]
+        print(
+            f"[dataset-build] loaded {data_dir}: len={len(dataset)} time={time.time() - tic:.2f}s",
+            flush=True,
+        )
+        datasets.append(dataset)
     if len(datasets) == 1:
         return datasets[0]
     return ConcatDataset(datasets)
@@ -47,12 +54,17 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    print("[dataset-test] starting python process", flush=True)
     env = DistributedEnv()
+    print(f"[rank:{env.global_rank}] before init_process_group", flush=True)
     dist.init_process_group("nccl", rank=env.global_rank, world_size=env.world_size)
+    print(f"[rank:{env.global_rank}] after init_process_group", flush=True)
     torch.cuda.set_device(env.local_rank)
     torch.manual_seed(args.seed + env.global_rank)
 
+    tic = time.time()
     dataset = build_dataset(args.data_dirs, args.seq_len, args.file_pattern, args.data_dtype)
+    env.print(f"dataset built in {time.time() - tic:.2f}s")
     sampler = DistributedSampler(
         dataset,
         num_replicas=env.world_size,
@@ -66,7 +78,8 @@ def main():
         batch_size=args.batch_size,
         sampler=sampler,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=False,
+        persistent_workers=args.num_workers > 0,
         drop_last=True,
     )
 
@@ -78,6 +91,7 @@ def main():
     env.print_master(f"batch_size_per_rank: {args.batch_size}")
 
     sampler.set_epoch(0)
+    env.print("before dataloader iteration")
     for batch_idx, batch in enumerate(loader):
         if batch_idx >= args.num_batches:
             break
