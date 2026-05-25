@@ -241,6 +241,56 @@ def build_mlp_export_plans(model, width_union_list, hn, dynamic_experts):
     return plans, cfgs
 
 
+def count_exported_actual_moe_parameters(model, plans, dynamic_experts):
+    mlp_weight_names = set()
+    original_mlp_params = 0
+    for _, prefix, module, _, _ in plans:
+        for proj_name in ("gate_proj", "up_proj", "down_proj"):
+            weight_name = f"{prefix}.{proj_name}.weight"
+            mlp_weight_names.add(weight_name)
+            original_mlp_params += module.get_submodule(proj_name).weight.numel()
+
+    dense_with_gated_params = sum(param.numel() for param in model.parameters())
+    non_mlp_params = sum(
+        param.numel()
+        for name, param in model.named_parameters()
+        if name not in mlp_weight_names
+    )
+
+    moe_router_params = 0
+    moe_expert_params = 0
+    for _, _, module, expert_indices, source_expert in plans:
+        moe_router_params += source_expert.linear_router.weight.numel()
+        hidden_size = module.gate_proj.weight.shape[1]
+        for expert_idx in range(dynamic_experts):
+            width = int(expert_indices[expert_idx].numel())
+            moe_expert_params += width * hidden_size
+            moe_expert_params += width * hidden_size
+            moe_expert_params += hidden_size * width
+
+    final_total_params = non_mlp_params + moe_router_params + moe_expert_params
+    gated_attention_params = sum(
+        param.numel()
+        for name, param in model.named_parameters()
+        if "virtual_gated_attn" in name or "gate_module" in name
+    )
+    return {
+        "dense_with_gated_params": dense_with_gated_params,
+        "original_dense_mlp_params": original_mlp_params,
+        "final_non_mlp_params": non_mlp_params,
+        "actual_moe_router_params": moe_router_params,
+        "actual_moe_expert_params": moe_expert_params,
+        "actual_moe_total_params": final_total_params,
+        "gated_attention_params": gated_attention_params,
+    }
+
+
+def print_parameter_report(counts):
+    print("[export-parameter-count]")
+    for key, value in counts.items():
+        print(f"{key}: {value / 1_000_000:.3f}M")
+
+
 def iter_final_tensors(model, plans, dynamic_experts):
     mlp_prefixes = {prefix for _, prefix, _, _, _ in plans}
 
@@ -410,6 +460,7 @@ def main(
         hn=hn,
         dynamic_experts=dynamic_experts,
     )
+    print_parameter_report(count_exported_actual_moe_parameters(model, plans, dynamic_experts))
 
     model.config.tomoe_moe_cfgs = cfgs
     model.config.tomoe_gated_attn_rank = gate_rank
