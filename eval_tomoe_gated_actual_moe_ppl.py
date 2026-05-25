@@ -12,6 +12,7 @@ python eval_tomoe_gated_actual_moe_ppl.py \
 
 import gc
 import math
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -119,7 +120,7 @@ def evaluate_ppl(model, tokenizer, datasets="wikitext", block_size=2048, max_tok
 
 
 def main(
-    model_name_or_path: str,
+    model_name_or_path: Optional[str] = None,
     tokenizer_name_or_path: str = None,
     datasets: str = "wikitext",
     block_size: int = 2048,
@@ -131,6 +132,9 @@ def main(
     allow_cpu_fallback: bool = True,
     cuda_margin_gib: float = 2.0,
 ):
+    if model_name_or_path is None:
+        raise ValueError("Please pass --model_name_or_path /path/to/exported_model")
+
     dtype = {
         "float16": torch.float16,
         "bfloat16": torch.bfloat16,
