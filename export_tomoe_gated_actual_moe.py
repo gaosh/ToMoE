@@ -291,6 +291,31 @@ def print_parameter_report(counts):
         print(f"{key}: {value / 1_000_000:.3f}M")
 
 
+def print_loaded_model_parameter_report(model, prefix="[loaded-model-parameter-count]"):
+    total_params = sum(param.numel() for param in model.parameters())
+    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    dtype_bytes = {}
+    for param in model.parameters():
+        dtype_bytes[param.dtype] = dtype_bytes.get(param.dtype, 0) + param.numel() * param.element_size()
+    print(prefix)
+    print(f"total_params: {total_params / 1_000_000:.3f}M")
+    print(f"trainable_params: {trainable_params / 1_000_000:.3f}M")
+    for dtype, nbytes in sorted(dtype_bytes.items(), key=lambda item: str(item[0])):
+        print(f"parameter_memory_{dtype}: {nbytes / (1024 ** 3):.3f}GiB")
+
+
+def print_cuda_memory(prefix):
+    if not torch.cuda.is_available():
+        return
+    free_bytes, total_bytes = torch.cuda.mem_get_info()
+    print(f"[cuda-memory] {prefix}")
+    print(f"free: {free_bytes / (1024 ** 3):.3f}GiB")
+    print(f"total: {total_bytes / (1024 ** 3):.3f}GiB")
+    print(f"allocated: {torch.cuda.memory_allocated() / (1024 ** 3):.3f}GiB")
+    print(f"reserved: {torch.cuda.memory_reserved() / (1024 ** 3):.3f}GiB")
+    print(f"max_allocated: {torch.cuda.max_memory_allocated() / (1024 ** 3):.3f}GiB")
+
+
 def iter_final_tensors(model, plans, dynamic_experts):
     mlp_prefixes = {prefix for _, prefix, _, _, _ in plans}
 
@@ -412,6 +437,7 @@ def main(
     ppl_block_size: int = 2048,
     ppl_max_tokens: int = 524288,
     ppl_device: str = "cuda",
+    ppl_load_on_cpu: bool = True,
 ):
     dtype = {
         "float16": torch.float16,
@@ -421,11 +447,13 @@ def main(
 
     from models.modeling_llama_tomoe_gated_attn import LlamaForCausalLM
 
+    print_cuda_memory("before loading dense model")
     model = LlamaForCausalLM.from_pretrained(
         hf_model,
         torch_dtype=dtype,
         low_cpu_mem_usage=low_cpu_mem_usage,
     )
+    print_cuda_memory("after loading dense model")
     config = AutoConfig.from_pretrained(hf_model)
     attach_gated_attention_modules(model, gate_rank=gate_rank, gate_init_bias=gate_init_bias)
 
@@ -482,6 +510,7 @@ def main(
         output_dir=output_dir,
         max_shard_size=save_shard_size,
     )
+    print_cuda_memory("after saving streamed actual-MoE model")
 
     if save_tokenizer:
         tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
@@ -497,14 +526,20 @@ def main(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+        print_cuda_memory("before loading exported model for ppl")
         print(f"[ppl] loading exported model from {output_dir}")
+        device_map = None
+        if ppl_device.startswith("cuda") and not ppl_load_on_cpu:
+            device_map = {"": ppl_device}
         exported_model = AutoModelForCausalLM.from_pretrained(
             output_dir,
             trust_remote_code=True,
             torch_dtype=dtype,
             low_cpu_mem_usage=True,
-            device_map={"": ppl_device} if ppl_device.startswith("cuda") else None,
+            device_map=device_map,
         )
+        print_loaded_model_parameter_report(exported_model, prefix="[ppl-loaded-model-parameter-count]")
+        print_cuda_memory("after loading exported model for ppl")
         evaluate_ppl(
             exported_model,
             tokenizer,
