@@ -25,6 +25,7 @@ MOE_AUX_LOSS_WEIGHT="${MOE_AUX_LOSS_WEIGHT:-0.01}"
 TOMOE_MOE_IMPL="${TOMOE_MOE_IMPL:-grouped_gemm}"
 TOMOE_MOE_IMPL="$(printf '%s' "${TOMOE_MOE_IMPL}" | xargs)"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
+MASTER_PORT="${MASTER_PORT:-29513}"
 COMPILE_MODEL="${COMPILE_MODEL:-0}"
 COMPILE_MODE="${COMPILE_MODE:-default}"
 ATTN_IMPLEMENTATION="${ATTN_IMPLEMENTATION:-flash_attention_2}"
@@ -85,6 +86,7 @@ echo "[continual-pretrain] compile: ${COMPILE_MODEL} (${COMPILE_MODE})"
 echo "[continual-pretrain] attention: ${ATTN_IMPLEMENTATION}"
 echo "[continual-pretrain] moe_aux_loss_weight: ${MOE_AUX_LOSS_WEIGHT}"
 echo "[continual-pretrain] tomoe_moe_impl: ${TOMOE_MOE_IMPL}"
+echo "[continual-pretrain] master_port: ${MASTER_PORT}"
 echo "[continual-pretrain] data dirs:"
 printf '  %s\n' "${DATA_DIRS[@]}"
 
@@ -93,7 +95,7 @@ if [ "${COMPILE_MODEL}" = "1" ]; then
     EXTRA_ARGS+=(--compile_model --compile_mode "${COMPILE_MODE}")
 fi
 
-torchrun --nproc_per_node="${NPROC_PER_NODE}" train_continual_pretrain_fsdp.py \
+torchrun --nproc_per_node="${NPROC_PER_NODE}" --master_port="${MASTER_PORT}" train_continual_pretrain_fsdp.py \
     --model_name_or_path "${MODEL_NAME_OR_PATH}" \
     --data_dirs "${DATA_DIRS[@]}" \
     --output_dir "${OUTPUT_DIR}" \
