@@ -431,10 +431,6 @@ def main(
         output_dir=output_dir,
         max_shard_size=save_shard_size,
     )
-    del hn
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     if save_tokenizer:
         tokenizer = AutoTokenizer.from_pretrained(hf_model, trust_remote_code=True)
@@ -445,6 +441,11 @@ def main(
     if test_ppl:
         if ppl_device.startswith("cuda") and not torch.cuda.is_available():
             raise RuntimeError(f"Requested ppl_device={ppl_device}, but CUDA is not available.")
+        del model, hn, checkpoint, plans, vectors, width_list, width_union_list
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
         print(f"[ppl] loading exported model from {output_dir}")
         exported_model = AutoModelForCausalLM.from_pretrained(
             output_dir,
@@ -461,6 +462,11 @@ def main(
             max_tokens=ppl_max_tokens,
             device=ppl_device,
         )
+    else:
+        del hn
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
