@@ -306,27 +306,52 @@ class LlamaMLP(nn.Module):
         router_logits = None
         if self.router is not None and len(self.experts) > 0:
             binary, router_logits = self.router(x)
+
             if self.actual_moe:
                 batch_size, sequence_length, hidden_dim = x.shape
-                x_flat = x.view(-1, hidden_dim)
-                binary = binary.view(batch_size * sequence_length, -1)
-                cnts = binary.new_zeros((binary.shape[0], len(self.experts)))
-                cnts.scatter_(1, binary, 1)
-                tokens_per_expert = cnts.sum(dim=0).cpu().numpy()
-                idxs = binary.view(-1).argsort()
-                sorted_tokens = x_flat[idxs]
+                x_flat = x.reshape(-1, hidden_dim)
+
+                expert_ids = binary.reshape(-1).long()
+
+                # router_logits here is actually soft routing probability
+                router_probs = router_logits.reshape(-1, len(self.experts))
+
+                gate_scores = router_probs.gather(
+                    1, expert_ids.unsqueeze(1)
+                ).squeeze(1)
+
+                sorted_expert_ids, idxs = torch.sort(expert_ids)
+                sorted_tokens = x_flat.index_select(0, idxs)
+                sorted_gate_scores = gate_scores.index_select(0, idxs)
+
+                tokens_per_expert = torch.bincount(
+                    sorted_expert_ids,
+                    minlength=len(self.experts),
+                )
 
                 outputs = []
                 start_idx = 0
-                for expert_idx, num_tokens in enumerate(tokens_per_expert):
-                    end_idx = start_idx + num_tokens
+                for expert_idx in range(len(self.experts)):
+                    num_tokens = int(tokens_per_expert[expert_idx].item())
                     if num_tokens == 0:
                         continue
-                    outputs.append(self.experts[expert_idx](sorted_tokens[start_idx:end_idx, :]))
+
+                    end_idx = start_idx + num_tokens
+
+                    expert_input = sorted_tokens[start_idx:end_idx, :]
+                    expert_gate = sorted_gate_scores[start_idx:end_idx].unsqueeze(-1)
+
+                    expert_output = self.experts[expert_idx](expert_input)
+                    expert_output = expert_output * expert_gate
+
+                    outputs.append(expert_output)
                     start_idx = end_idx
+
                 outs = torch.cat(outputs, dim=0)
-                new_x = torch.empty_like(outs)
-                new_x[idxs] = outs
+
+                new_x = torch.empty_like(x_flat)
+                new_x.index_copy_(0, idxs, outs)
+
                 return new_x.view(batch_size, sequence_length, hidden_dim), router_logits
 
         if self.config.pretraining_tp > 1:
