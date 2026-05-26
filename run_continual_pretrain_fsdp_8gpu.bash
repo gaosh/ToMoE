@@ -17,12 +17,15 @@ OUTPUT_DIR="${OUTPUT_DIR:-/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_g
 SEQ_LEN="${SEQ_LEN:-8192}"
 PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
-LEARNING_RATE="${LEARNING_RATE:-2e-5}"
+LEARNING_RATE="${LEARNING_RATE:-4e-5}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.1}"
 WARMUP_STEPS="${WARMUP_STEPS:-1000}"
-MAX_TRAIN_TOKENS="${MAX_TRAIN_TOKENS:-25B}"
+MAX_TRAIN_TOKENS="${MAX_TRAIN_TOKENS:-20B}"
 LOGGING_STEPS="${LOGGING_STEPS:-10}"
 SAVE_STEPS="${SAVE_STEPS:-20000}"
+SAVE_OPTIMIZER="${SAVE_OPTIMIZER:-0}"
+SAVE_OPTIMIZER_LATEST_ONLY="${SAVE_OPTIMIZER_LATEST_ONLY:-0}"
+SAVE_AT_ITER0="${SAVE_AT_ITER0:-0}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
 MOE_AUX_LOSS_WEIGHT="${MOE_AUX_LOSS_WEIGHT:-0.02}"
@@ -87,6 +90,9 @@ fi
 
 echo "[continual-pretrain] model: ${MODEL_NAME_OR_PATH}"
 echo "[continual-pretrain] output: ${OUTPUT_DIR}"
+echo "[continual-pretrain] save_optimizer: ${SAVE_OPTIMIZER}"
+echo "[continual-pretrain] save_optimizer_latest_only: ${SAVE_OPTIMIZER_LATEST_ONLY}"
+echo "[continual-pretrain] save_at_iter0: ${SAVE_AT_ITER0}"
 echo "[continual-pretrain] compile: ${COMPILE_MODEL} (${COMPILE_MODE})"
 echo "[continual-pretrain] attention: ${ATTN_IMPLEMENTATION}"
 echo "[continual-pretrain] moe_aux_loss_weight: ${MOE_AUX_LOSS_WEIGHT}"
@@ -102,6 +108,15 @@ if [ "${COMPILE_MODEL}" = "1" ]; then
 fi
 if [ "${LOAD_MODEL_ON_GPU}" = "1" ]; then
     EXTRA_ARGS+=(--load_model_on_gpu)
+fi
+if [ "${SAVE_OPTIMIZER}" = "1" ]; then
+    EXTRA_ARGS+=(--save_optimizer)
+fi
+if [ "${SAVE_OPTIMIZER_LATEST_ONLY}" = "1" ]; then
+    EXTRA_ARGS+=(--save_optimizer_latest_only)
+fi
+if [ "${SAVE_AT_ITER0}" = "1" ]; then
+    EXTRA_ARGS+=(--save_at_iter0)
 fi
 
 torchrun --nproc_per_node="${NPROC_PER_NODE}" --master_port="${MASTER_PORT}" train_continual_pretrain_fsdp.py \

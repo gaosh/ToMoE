@@ -42,7 +42,9 @@ from torch.distributed.fsdp import (
     FullStateDictConfig,
     FullyShardedDataParallel as FSDP,
     MixedPrecision,
+    ShardedOptimStateDictConfig,
     ShardingStrategy,
+    ShardedStateDictConfig,
     StateDictType,
 )
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
@@ -106,6 +108,9 @@ def parse_args():
     parser.add_argument("--logging_steps", type=int, default=10)
     parser.add_argument("--save_steps", type=int, default=20000)
     parser.add_argument("--save_shard_size", type=str, default="5GB")
+    parser.add_argument("--save_optimizer", action="store_true", default=False)
+    parser.add_argument("--save_optimizer_latest_only", action="store_true", default=False)
+    parser.add_argument("--save_at_iter0", action="store_true", default=False)
     parser.add_argument("--resume_from_checkpoint", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
 
@@ -449,6 +454,97 @@ def write_training_config_overrides(args, save_dir):
         json.dump(config, f, indent=2, sort_keys=True)
 
 
+def summarize_tensor_state(obj):
+    total = 0
+    by_dtype = {}
+
+    def visit(value):
+        nonlocal total
+        if torch.is_tensor(value):
+            nbytes = value.numel() * value.element_size()
+            total += nbytes
+            dtype_name = str(value.dtype)
+            by_dtype[dtype_name] = by_dtype.get(dtype_name, 0) + nbytes
+        elif hasattr(value, "local_shards"):
+            for shard in value.local_shards():
+                visit(shard.tensor)
+        elif hasattr(value, "to_local"):
+            visit(value.to_local())
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item)
+
+    visit(obj)
+    return total, by_dtype
+
+
+def atomic_torch_save(obj, path):
+    tmp_path = f"{path}.tmp"
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, path)
+
+
+def save_trainer_state(save_dir, scheduler, global_step, epoch, consumed_tokens):
+    trainer_state = {
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+        "global_step": global_step,
+        "epoch": epoch,
+        "consumed_tokens": consumed_tokens,
+    }
+    atomic_torch_save(trainer_state, os.path.join(save_dir, "trainer_state.pt"))
+
+
+def save_sharded_optimizer_state(model, optimizer, save_dir, env):
+    optim_dir = os.path.join(save_dir, "optimizer_state")
+    if env.global_rank == 0:
+        os.makedirs(optim_dir, exist_ok=True)
+    dist.barrier()
+
+    model_cfg = ShardedStateDictConfig(offload_to_cpu=True)
+    optim_cfg = ShardedOptimStateDictConfig(offload_to_cpu=True)
+    with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT, model_cfg, optim_cfg):
+        optim_state = FSDP.optim_state_dict(model, optimizer)
+
+    total, by_dtype = summarize_tensor_state(optim_state)
+    by_dtype_gb = {dtype: round(nbytes / (1024**3), 4) for dtype, nbytes in by_dtype.items()}
+    print(
+        f"[checkpoint] optimizer shard rank={env.global_rank} "
+        f"size={total / (1024**3):.4f}GB dtype_breakdown={by_dtype_gb}",
+        flush=True,
+    )
+
+    shard = {
+        "optimizer": optim_state,
+        "global_rank": env.global_rank,
+        "world_size": env.world_size,
+    }
+    shard_path = os.path.join(optim_dir, f"optim_rank{env.global_rank:05d}.pt")
+    atomic_torch_save(shard, shard_path)
+    del optim_state, shard
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    dist.barrier()
+
+
+def cleanup_old_optimizer_states(output_dir, keep_save_dir, env):
+    if env.global_rank != 0:
+        return
+    keep_save_dir = os.path.abspath(keep_save_dir)
+    for path in glob.glob(os.path.join(output_dir, "*")):
+        if not os.path.isdir(path):
+            continue
+        if os.path.abspath(path) == keep_save_dir:
+            continue
+        optim_dir = os.path.join(path, "optimizer_state")
+        if os.path.isdir(optim_dir):
+            env.print_master(f"[checkpoint] removing old optimizer_state: {optim_dir}")
+            shutil.rmtree(optim_dir)
+
+
 def save_checkpoint(
     model,
     tokenizer,
@@ -471,11 +567,6 @@ def save_checkpoint(
     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, cfg):
         model_state = model.state_dict()
 
-    try:
-        optim_state = FSDP.optim_state_dict(model, optimizer)
-    except Exception:
-        optim_state = optimizer.state_dict()
-
     if env.global_rank == 0:
         base = unwrap_model(model)
         env.print_master(f"[checkpoint] writing HuggingFace checkpoint to: {save_dir}")
@@ -492,32 +583,74 @@ def save_checkpoint(
         write_training_config_overrides(args, save_dir)
         env.print_master(f"[checkpoint] copied source config to: {os.path.join(save_dir, 'config.json')}")
         validate_source_config_unchanged(source_config_path, source_config, env)
+        save_trainer_state(save_dir, scheduler, global_step, epoch, consumed_tokens)
 
-        training_state = {
-            "optimizer": optim_state,
-            "scheduler": scheduler.state_dict() if scheduler is not None else None,
-            "global_step": global_step,
-            "epoch": epoch,
-            "consumed_tokens": consumed_tokens,
-        }
-        torch.save(training_state, os.path.join(save_dir, "training_state.pt"))
+    del model_state
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     dist.barrier()
+    if args.save_optimizer:
+        save_sharded_optimizer_state(model, optimizer, save_dir, env)
+        if args.save_optimizer_latest_only:
+            cleanup_old_optimizer_states(args.output_dir, save_dir, env)
+            dist.barrier()
 
 
-def load_training_state(model, optimizer, scheduler, checkpoint_dir, env):
-    state_path = os.path.join(checkpoint_dir, "training_state.pt")
-    if not os.path.exists(state_path):
-        env.print_master(f"[warning] No training_state.pt found in {checkpoint_dir}; model weights were loaded only.")
+def load_optimizer_state(model, optimizer, checkpoint_dir, args, env, legacy_state=None):
+    if not args.save_optimizer:
+        env.print_master("[resume] --save_optimizer is not set; skipping optimizer state load.")
+        return
+
+    optim_dir = os.path.join(checkpoint_dir, "optimizer_state")
+    shard_path = os.path.join(optim_dir, f"optim_rank{env.global_rank:05d}.pt")
+    if os.path.exists(shard_path):
+        shard = torch.load(shard_path, map_location="cpu")
+        optim_state = shard.get("optimizer", shard)
+        try:
+            optim_state = FSDP.optim_state_dict_to_load(model, optimizer, optim_state)
+        except Exception as exc:
+            env.print_master(f"[resume] using optimizer shard without conversion on rank {env.global_rank}: {exc}")
+        optimizer.load_state_dict(optim_state)
+        del shard, optim_state
+        gc.collect()
+        env.print_master(f"[resume] loaded sharded optimizer state from {optim_dir}")
+        return
+
+    if legacy_state is not None and legacy_state.get("optimizer") is not None:
+        env.print_master(
+            "[warning] loading legacy full optimizer from training_state.pt; this may be memory-heavy."
+        )
+        optim_state = legacy_state["optimizer"]
+        try:
+            optim_state = FSDP.optim_state_dict_to_load(model, optimizer, optim_state)
+        except Exception as exc:
+            env.print_master(f"[resume] using legacy optimizer without conversion: {exc}")
+        optimizer.load_state_dict(optim_state)
+        return
+
+    env.print_master(f"[warning] No optimizer shard found for rank {env.global_rank}: {shard_path}")
+
+
+def load_training_state(model, optimizer, scheduler, checkpoint_dir, args, env):
+    trainer_state_path = os.path.join(checkpoint_dir, "trainer_state.pt")
+    legacy_state_path = os.path.join(checkpoint_dir, "training_state.pt")
+    legacy_state = None
+
+    if os.path.exists(trainer_state_path):
+        state = torch.load(trainer_state_path, map_location="cpu")
+    elif os.path.exists(legacy_state_path):
+        env.print_master("[warning] trainer_state.pt not found; falling back to legacy training_state.pt.")
+        legacy_state = torch.load(legacy_state_path, map_location="cpu")
+        state = legacy_state
+    else:
+        env.print_master(
+            f"[warning] No trainer_state.pt or training_state.pt found in {checkpoint_dir}; model weights were loaded only."
+        )
         return 0, 0, 0
 
-    state = torch.load(state_path, map_location="cpu")
-    if "optimizer" in state and state["optimizer"] is not None:
-        try:
-            optim_state = FSDP.optim_state_dict_to_load(model, optimizer, state["optimizer"])
-        except Exception:
-            optim_state = state["optimizer"]
-        optimizer.load_state_dict(optim_state)
+    load_optimizer_state(model, optimizer, checkpoint_dir, args, env, legacy_state=legacy_state)
 
     if scheduler is not None and state.get("scheduler") is not None:
         scheduler.load_state_dict(state["scheduler"])
@@ -648,7 +781,24 @@ def train(args):
             optimizer,
             scheduler,
             args.resume_from_checkpoint,
+            args,
             env,
+        )
+
+    if args.save_at_iter0 and global_step == 0:
+        save_checkpoint(
+            model=model,
+            tokenizer=tokenizer,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            args=args,
+            env=env,
+            tag="checkpoint-iter0",
+            global_step=0,
+            epoch=0,
+            consumed_tokens=0,
+            source_config_path=source_config_path,
+            source_config=source_config,
         )
 
     model.train()
