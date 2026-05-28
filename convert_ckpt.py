@@ -103,6 +103,31 @@ def main():
 
     print("[done]")
 
+       print("[test] loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        str(DST_DIR),
+        trust_remote_code=True,
+    )
+
+    print("[test] loading model...")
+    model = AutoModelForCausalLM.from_pretrained(
+        str(DST_DIR),
+        trust_remote_code=True,
+        torch_dtype=torch.bfloat16,
+        device_map="cpu",
+    )
+
+    print("[test] model loaded successfully")
+
+    test_text = "Hello world"
+    inputs = tokenizer(test_text, return_tensors="pt")
+
+    with torch.no_grad():
+        outputs = model(**inputs)
+
+    print("[test] forward pass successful")
+    print(f"[test] logits shape: {outputs.logits.shape}")
+
 
 if __name__ == "__main__":
     main()
