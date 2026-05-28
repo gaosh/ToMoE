@@ -1,0 +1,592 @@
+"""
+Stage-2 supervised fine-tuning with FSDP on Tulu-style chat data.
+
+This script reuses the continual pretraining FSDP/model/checkpoint helpers, but
+changes the data and loss semantics:
+- CPT trains on every token in packed pretraining blocks.
+- SFT trains only assistant response tokens; system/user/template tokens use
+  label -100 and are ignored by the standard HF causal LM loss.
+- Tulu-3 defaults to no packing. Optional packing is available for throughput.
+"""
+
+import argparse
+import inspect
+import math
+import os
+import time
+from contextlib import nullcontext
+
+import torch
+import torch.distributed as dist
+from datasets import load_dataset
+from torch import autocast
+from torch.utils.data import DataLoader, DistributedSampler
+
+from train_continual_pretrain_fsdp import (
+    build_model,
+    build_optimizer,
+    load_balancing_loss,
+    load_source_config,
+    load_training_state,
+    log_elapsed,
+    maybe_compile_model,
+    maybe_load_tokenizer,
+    reduce_loss_stats,
+    save_checkpoint,
+    setup_distributed,
+    validate_loaded_config,
+    validate_output_dir,
+    wrap_fsdp,
+)
+from utils import unwrap_model
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="FSDP SFT on Tulu-3-style messages data.")
+
+    parser.add_argument("--model_name_or_path", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, required=True)
+    parser.add_argument("--tokenizer_name_or_path", type=str, default=None)
+
+    parser.add_argument("--dataset_name", type=str, default="allenai/tulu-3-sft-mixture")
+    parser.add_argument("--dataset_split", type=str, default="train")
+    parser.add_argument("--dataset_cache_dir", type=str, default=None)
+    parser.add_argument("--preprocessing_num_workers", type=int, default=8)
+    parser.add_argument("--max_train_samples", type=int, default=None)
+    parser.add_argument("--max_seq_length", type=int, default=4096)
+    parser.add_argument("--packing", action="store_true")
+    parser.add_argument("--debug_sft_example", action="store_true")
+    parser.add_argument("--num_workers", type=int, default=4)
+
+    parser.add_argument("--per_device_train_batch_size", type=int, default=1)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=16)
+    parser.add_argument("--learning_rate", type=float, default=2e-6)
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+    parser.add_argument("--adam_beta1", type=float, default=0.9)
+    parser.add_argument("--adam_beta2", type=float, default=0.95)
+    parser.add_argument("--adam_epsilon", type=float, default=1e-8)
+    parser.add_argument("--warmup_ratio", type=float, default=0.03)
+    parser.add_argument("--lr_scheduler_type", type=str, default="linear", choices=["linear", "cosine"])
+    parser.add_argument("--num_train_epochs", type=int, default=1)
+    parser.add_argument("--max_train_steps", type=int, default=None)
+    parser.add_argument("--max_grad_norm", type=float, default=1.0)
+    parser.add_argument("--use_8bit_adam", action="store_true")
+    parser.add_argument("--moe_aux_loss_weight", type=float, default=0.01)
+    parser.add_argument("--tomoe_moe_impl", type=str, default="naive", choices=["naive", "grouped_gemm"])
+
+    parser.add_argument("--bf16", action="store_true", default=True)
+    parser.add_argument("--load_model_on_gpu", action="store_true")
+    parser.add_argument("--gradient_checkpointing", action="store_true")
+    parser.add_argument("--compile_model", action="store_true")
+    parser.add_argument("--compile_mode", type=str, default="default")
+    parser.add_argument(
+        "--attn_implementation",
+        type=str,
+        default="flash_attention_2",
+        choices=["flash_attention_2", "sdpa", "eager", "auto", "none"],
+    )
+    parser.add_argument("--fsdp_transformer_layer_cls_to_wrap", type=str, default="LlamaDecoderLayer")
+
+    parser.add_argument("--logging_steps", type=int, default=10)
+    parser.add_argument("--save_steps", type=int, default=1000)
+    parser.add_argument("--save_shard_size", type=str, default="5GB")
+    parser.add_argument("--save_optimizer", action="store_true", default=False)
+    parser.add_argument("--save_optimizer_latest_only", action="store_true", default=False)
+    parser.add_argument("--save_at_iter0", action="store_true", default=False)
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=42)
+
+    return parser.parse_args()
+
+
+def ensure_tokenizer_ready(tokenizer):
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.chat_template is None:
+        raise ValueError("Tokenizer does not define chat_template; SFT requires tokenizer.apply_chat_template.")
+
+
+def normalize_messages(messages):
+    if not isinstance(messages, list) or not messages:
+        return None
+    normalized = []
+    for message in messages:
+        if not isinstance(message, dict):
+            return None
+        role = message.get("role")
+        content = message.get("content")
+        if role is None or content is None:
+            return None
+        normalized.append({"role": str(role), "content": str(content)})
+    return normalized
+
+
+def apply_chat_ids(tokenizer, messages, max_length=None, truncation=False, add_generation_prompt=False):
+    return tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=add_generation_prompt,
+        truncation=truncation,
+        max_length=max_length,
+    )
+
+
+def assistant_labels_with_mask(tokenizer, messages, max_length):
+    rendered = tokenizer.apply_chat_template(
+        messages,
+        tokenize=True,
+        add_generation_prompt=False,
+        truncation=True,
+        max_length=max_length,
+        return_dict=True,
+        return_assistant_tokens_mask=True,
+    )
+    input_ids = rendered["input_ids"]
+    assistant_mask = rendered.get("assistant_masks") or rendered.get("assistant_tokens_mask")
+    if assistant_mask is None:
+        return None
+    if sum(int(mask) for mask in assistant_mask) == 0 and any(message["role"] == "assistant" for message in messages):
+        return None
+    labels = [token_id if int(mask) == 1 else -100 for token_id, mask in zip(input_ids, assistant_mask)]
+    return input_ids, labels
+
+
+def assistant_labels_with_prefix_spans(tokenizer, messages, max_length):
+    input_ids = apply_chat_ids(tokenizer, messages, max_length=max_length, truncation=True)
+    labels = [-100] * len(input_ids)
+    for idx, message in enumerate(messages):
+        if message["role"] != "assistant":
+            continue
+        try:
+            start_ids = apply_chat_ids(
+                tokenizer,
+                messages[:idx],
+                max_length=None,
+                truncation=False,
+                add_generation_prompt=True,
+            )
+        except Exception:
+            start_ids = apply_chat_ids(
+                tokenizer,
+                messages[:idx] + [{"role": "assistant", "content": ""}],
+                max_length=None,
+                truncation=False,
+                add_generation_prompt=False,
+            )
+        end_ids = apply_chat_ids(tokenizer, messages[: idx + 1], max_length=None, truncation=False)
+        start = min(len(start_ids), len(input_ids))
+        end = min(len(end_ids), len(input_ids))
+        for pos in range(start, end):
+            labels[pos] = input_ids[pos]
+    return input_ids, labels
+
+
+def tokenize_sft_example(example, tokenizer, max_length):
+    messages = normalize_messages(example.get("messages"))
+    if messages is None:
+        return {"input_ids": [], "attention_mask": [], "labels": [], "valid_label_tokens": 0}
+
+    tokenized = None
+    try:
+        tokenized = assistant_labels_with_mask(tokenizer, messages, max_length)
+    except Exception:
+        tokenized = None
+    if tokenized is None:
+        input_ids, labels = assistant_labels_with_prefix_spans(tokenizer, messages, max_length)
+    else:
+        input_ids, labels = tokenized
+
+    input_ids = input_ids[:max_length]
+    labels = labels[:max_length]
+    valid_label_tokens = sum(1 for label in labels if label != -100)
+    return {
+        "input_ids": input_ids,
+        "attention_mask": [1] * len(input_ids),
+        "labels": labels,
+        "valid_label_tokens": valid_label_tokens,
+    }
+
+
+def pack_tokenized_dataset(dataset, tokenizer, max_seq_length):
+    eos_id = tokenizer.eos_token_id
+    all_input_ids = []
+    all_labels = []
+    for example in dataset:
+        ids = list(example["input_ids"])
+        labels = list(example["labels"])
+        if eos_id is not None:
+            ids.append(eos_id)
+            labels.append(-100)
+        all_input_ids.extend(ids)
+        all_labels.extend(labels)
+
+    blocks = []
+    usable = (len(all_input_ids) // max_seq_length) * max_seq_length
+    for start in range(0, usable, max_seq_length):
+        input_ids = all_input_ids[start : start + max_seq_length]
+        labels = all_labels[start : start + max_seq_length]
+        if any(label != -100 for label in labels):
+            blocks.append(
+                {
+                    "input_ids": input_ids,
+                    "attention_mask": [1] * len(input_ids),
+                    "labels": labels,
+                    "valid_label_tokens": sum(1 for label in labels if label != -100),
+                }
+            )
+    from datasets import Dataset
+
+    return Dataset.from_list(blocks)
+
+
+def build_sft_dataset(args, tokenizer, env):
+    dataset = load_dataset(
+        args.dataset_name,
+        split=args.dataset_split,
+        cache_dir=args.dataset_cache_dir,
+    )
+    if args.max_train_samples is not None:
+        dataset = dataset.select(range(min(args.max_train_samples, len(dataset))))
+
+    tokenize_fn = lambda example: tokenize_sft_example(example, tokenizer, args.max_seq_length)
+    dataset = dataset.map(
+        tokenize_fn,
+        remove_columns=dataset.column_names,
+        num_proc=args.preprocessing_num_workers,
+        desc="Tokenizing SFT messages",
+    )
+    dataset = dataset.filter(lambda example: example["valid_label_tokens"] > 0, desc="Filtering empty SFT labels")
+    if args.packing:
+        env.print_master("[sft] packing enabled: fixed-length blocks preserve assistant-only labels.")
+        dataset = pack_tokenized_dataset(dataset, tokenizer, args.max_seq_length)
+    return dataset
+
+
+class SFTDataCollator:
+    def __init__(self, tokenizer):
+        self.pad_token_id = tokenizer.pad_token_id
+
+    def __call__(self, features):
+        max_len = max(len(feature["input_ids"]) for feature in features)
+        batch = {"input_ids": [], "attention_mask": [], "labels": []}
+        for feature in features:
+            pad_len = max_len - len(feature["input_ids"])
+            batch["input_ids"].append(feature["input_ids"] + [self.pad_token_id] * pad_len)
+            batch["attention_mask"].append(feature["attention_mask"] + [0] * pad_len)
+            batch["labels"].append(feature["labels"] + [-100] * pad_len)
+        return {key: torch.tensor(value, dtype=torch.long) for key, value in batch.items()}
+
+
+def build_dataloader(dataset, tokenizer, args, env):
+    sampler = DistributedSampler(
+        dataset,
+        num_replicas=env.world_size,
+        rank=env.global_rank,
+        shuffle=True,
+        drop_last=True,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=args.per_device_train_batch_size,
+        sampler=sampler,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        persistent_workers=args.num_workers > 0,
+        drop_last=True,
+        collate_fn=SFTDataCollator(tokenizer),
+    )
+    return loader, sampler
+
+
+def infer_max_steps(args, dataloader, env):
+    steps_per_epoch = max(1, math.ceil(len(dataloader) / args.gradient_accumulation_steps))
+    epoch_steps = steps_per_epoch * args.num_train_epochs
+    if args.max_train_steps is None:
+        return epoch_steps
+    return min(args.max_train_steps, epoch_steps)
+
+
+def build_scheduler(optimizer, args):
+    total_steps = max(1, args.effective_max_steps)
+    warmup_steps = int(math.ceil(total_steps * args.warmup_ratio))
+
+    def lr_lambda(step):
+        if warmup_steps > 0 and step < warmup_steps:
+            return max(1e-8, float(step + 1) / float(warmup_steps))
+        progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        progress = min(1.0, max(0.0, progress))
+        if args.lr_scheduler_type == "cosine":
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
+        return max(0.0, 1.0 - progress)
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+def debug_sft_example(dataset, tokenizer, env):
+    if env.global_rank != 0 or len(dataset) == 0:
+        return
+    example = dataset[0]
+    tokens = example["input_ids"]
+    labels = example["labels"]
+    pieces = []
+    for token_id, label in zip(tokens[:256], labels[:256]):
+        text = tokenizer.decode([token_id], skip_special_tokens=False).replace("\n", "\\n")
+        marker = "L" if label != -100 else "."
+        pieces.append(f"{marker}:{text}")
+    env.print_master("[sft-debug] first example label mask visualization (L=loss, .=ignored):")
+    env.print_master(" ".join(pieces))
+    env.print_master(f"[sft-debug] valid_label_tokens={sum(1 for label in labels if label != -100)}")
+
+
+def reduce_token_stats(valid_label_tokens, total_tokens, total_tokens_including_padding, device):
+    stats = torch.tensor(
+        [valid_label_tokens, total_tokens, total_tokens_including_padding],
+        device=device,
+        dtype=torch.float64,
+    )
+    dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+    return [float(item) for item in stats.tolist()]
+
+
+def supports_output_router_logits(model):
+    try:
+        signature = inspect.signature(unwrap_model(model).forward)
+    except Exception:
+        return True
+    return "output_router_logits" in signature.parameters
+
+
+def train(args):
+    env = setup_distributed()
+    torch.manual_seed(args.seed + env.global_rank)
+    validate_output_dir(args)
+    source_config_path, source_config = load_source_config(args)
+    if env.global_rank == 0:
+        os.makedirs(args.output_dir, exist_ok=True)
+
+    tic = time.time()
+    tokenizer = maybe_load_tokenizer(args, env)
+    if tokenizer is None:
+        raise RuntimeError("SFT requires a tokenizer.")
+    ensure_tokenizer_ready(tokenizer)
+    log_elapsed(env, "tokenizer load", tic)
+
+    tic = time.time()
+    dataset = build_sft_dataset(args, tokenizer, env)
+    if len(dataset) == 0:
+        raise RuntimeError("SFT dataset is empty after tokenization/filtering; check chat template and label masking.")
+    debug_sft_example(dataset, tokenizer, env) if args.debug_sft_example else None
+    dataloader, sampler = build_dataloader(dataset, tokenizer, args, env)
+    log_elapsed(env, "dataset/dataloader build", tic)
+
+    tic = time.time()
+    model = build_model(args, env)
+    log_elapsed(env, "model from_pretrained", tic)
+    validate_loaded_config(model, source_config, env)
+
+    tic = time.time()
+    model = wrap_fsdp(model, args, env)
+    log_elapsed(env, "FSDP wrap", tic)
+    model = maybe_compile_model(model, args, env)
+    output_router_logits = supports_output_router_logits(model) and args.moe_aux_loss_weight > 0
+
+    args.effective_max_steps = infer_max_steps(args, dataloader, env)
+    env.print_master(f"Effective max SFT optimizer steps: {args.effective_max_steps}")
+
+    tic = time.time()
+    optimizer = build_optimizer(model, args, env)
+    scheduler = build_scheduler(optimizer, args)
+    log_elapsed(env, "optimizer/scheduler build", tic)
+
+    global_step = 0
+    start_epoch = 0
+    consumed_tokens = 0
+    if args.resume_from_checkpoint:
+        global_step, start_epoch, consumed_tokens = load_training_state(
+            model,
+            optimizer,
+            scheduler,
+            args.resume_from_checkpoint,
+            args,
+            env,
+        )
+
+    if args.save_at_iter0 and global_step == 0:
+        save_checkpoint(
+            model=model,
+            tokenizer=tokenizer,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            args=args,
+            env=env,
+            tag="checkpoint-iter0",
+            global_step=0,
+            epoch=0,
+            consumed_tokens=0,
+            source_config_path=source_config_path,
+            source_config=source_config,
+        )
+
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    dtype = torch.bfloat16 if args.bf16 else torch.float32
+    running_loss_sums = {"total": 0.0, "lm": 0.0, "balance": 0.0}
+    running_loss_count = 0
+    running_step_time = 0.0
+    running_valid_label_tokens = 0.0
+    running_total_tokens = 0.0
+    running_total_tokens_including_padding = 0.0
+    step_total_tokens = 0.0
+    log_tic = time.time()
+    optimizer_step_tic = time.time()
+
+    for epoch in range(start_epoch, args.num_train_epochs):
+        sampler.set_epoch(epoch)
+        for micro_step, batch in enumerate(dataloader):
+            input_ids = batch["input_ids"].to(env.local_rank, non_blocking=True)
+            attention_mask = batch["attention_mask"].to(env.local_rank, non_blocking=True)
+            labels = batch["labels"].to(env.local_rank, non_blocking=True)
+
+            valid_label_tokens = int((labels != -100).sum().item())
+            total_tokens = int(attention_mask.sum().item())
+            total_tokens_including_padding = int(input_ids.numel())
+
+            accumulation_index = micro_step % args.gradient_accumulation_steps
+            should_sync = accumulation_index == args.gradient_accumulation_steps - 1
+            sync_context = nullcontext() if should_sync else model.no_sync()
+
+            with sync_context:
+                with autocast(device_type="cuda", dtype=dtype, enabled=args.bf16):
+                    model_kwargs = {
+                        "input_ids": input_ids,
+                        "attention_mask": attention_mask,
+                        "labels": labels,
+                    }
+                    if output_router_logits:
+                        model_kwargs["output_router_logits"] = True
+                    outputs = model(**model_kwargs)
+                    lm_loss = outputs.loss
+                    balance_loss = load_balancing_loss(getattr(outputs, "router_logits", None))
+                    if balance_loss is None:
+                        balance_loss = lm_loss.new_zeros(())
+                    total_loss = lm_loss + args.moe_aux_loss_weight * balance_loss
+                    backward_loss = total_loss / args.gradient_accumulation_steps
+                    raw_lm_loss = lm_loss.detach()
+                    raw_balance_loss = balance_loss.detach()
+                    raw_total_loss = total_loss.detach()
+                backward_loss.backward()
+
+            running_loss_sums["total"] += float(raw_total_loss.item())
+            running_loss_sums["lm"] += float(raw_lm_loss.item())
+            running_loss_sums["balance"] += float(raw_balance_loss.item())
+            running_loss_count += 1
+            running_valid_label_tokens += valid_label_tokens
+            running_total_tokens += total_tokens
+            running_total_tokens_including_padding += total_tokens_including_padding
+            step_total_tokens += total_tokens
+
+            if not should_sync:
+                continue
+
+            if args.max_grad_norm is not None and args.max_grad_norm > 0:
+                model.clip_grad_norm_(args.max_grad_norm)
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+
+            global_step += 1
+            _, global_step_tokens, _ = reduce_token_stats(
+                0,
+                step_total_tokens,
+                0,
+                device=torch.device("cuda", env.local_rank),
+            )
+            consumed_tokens += int(global_step_tokens)
+            step_total_tokens = 0.0
+            running_step_time += time.time() - optimizer_step_tic
+            optimizer_step_tic = time.time()
+
+            if args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                elapsed = max(time.time() - log_tic, 1e-6)
+                avg_losses = reduce_loss_stats(
+                    running_loss_sums,
+                    running_loss_count,
+                    device=torch.device("cuda", env.local_rank),
+                )
+                valid, total, total_with_pad = reduce_token_stats(
+                    running_valid_label_tokens,
+                    running_total_tokens,
+                    running_total_tokens_including_padding,
+                    device=torch.device("cuda", env.local_rank),
+                )
+                env.print_master(
+                    f"global_step={global_step} loss={avg_losses['total']:.4f} "
+                    f"lm_loss={avg_losses['lm']:.4f} load_balance_loss={avg_losses['balance']:.4f} "
+                    f"lr={optimizer.param_groups[0]['lr']:.3e} "
+                    f"step_time={running_step_time / args.logging_steps:.3f}s "
+                    f"tokens/sec={total / elapsed:.2f} tokens/sec_including_padding={total_with_pad / elapsed:.2f} "
+                    f"valid_label_tokens={int(valid)} total_tokens={int(total)} "
+                    f"total_tokens_including_padding={int(total_with_pad)}"
+                )
+                running_loss_sums = {"total": 0.0, "lm": 0.0, "balance": 0.0}
+                running_loss_count = 0
+                running_step_time = 0.0
+                running_valid_label_tokens = 0.0
+                running_total_tokens = 0.0
+                running_total_tokens_including_padding = 0.0
+                log_tic = time.time()
+
+            if args.save_steps > 0 and global_step % args.save_steps == 0:
+                save_checkpoint(
+                    model,
+                    tokenizer,
+                    optimizer,
+                    scheduler,
+                    args,
+                    env,
+                    tag=f"checkpoint-{global_step}",
+                    global_step=global_step,
+                    epoch=epoch,
+                    consumed_tokens=consumed_tokens,
+                    source_config_path=source_config_path,
+                    source_config=source_config,
+                )
+
+            if global_step >= args.effective_max_steps:
+                save_checkpoint(
+                    model,
+                    tokenizer,
+                    optimizer,
+                    scheduler,
+                    args,
+                    env,
+                    tag="final",
+                    global_step=global_step,
+                    epoch=epoch,
+                    consumed_tokens=consumed_tokens,
+                    source_config_path=source_config_path,
+                    source_config=source_config,
+                )
+                dist.destroy_process_group()
+                return
+
+    save_checkpoint(
+        model,
+        tokenizer,
+        optimizer,
+        scheduler,
+        args,
+        env,
+        tag="final",
+        global_step=global_step,
+        epoch=args.num_train_epochs - 1,
+        consumed_tokens=consumed_tokens,
+        source_config_path=source_config_path,
+        source_config=source_config,
+    )
+    dist.destroy_process_group()
+
+
+if __name__ == "__main__":
+    torch.set_float32_matmul_precision("high")
+    train(parse_args())

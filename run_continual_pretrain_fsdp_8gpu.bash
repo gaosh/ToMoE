@@ -90,6 +90,7 @@ fi
 
 echo "[continual-pretrain] model: ${MODEL_NAME_OR_PATH}"
 echo "[continual-pretrain] output: ${OUTPUT_DIR}"
+echo "[continual-pretrain] save_steps: ${SAVE_STEPS}"
 echo "[continual-pretrain] save_optimizer: ${SAVE_OPTIMIZER}"
 echo "[continual-pretrain] save_optimizer_latest_only: ${SAVE_OPTIMIZER_LATEST_ONLY}"
 echo "[continual-pretrain] save_at_iter0: ${SAVE_AT_ITER0}"
