@@ -5,6 +5,8 @@ import shutil
 import json
 from pathlib import Path
 
+import torch
+
 from safetensors.torch import load_file, save_file
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
