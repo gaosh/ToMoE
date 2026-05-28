@@ -1,117 +1,113 @@
-# fix_export_checkpoint.py
+# fix_export_checkpoint_v2.py
 
-import os
-import shutil
 import json
+import shutil
 from pathlib import Path
 
-import torch
-
 from safetensors.torch import load_file, save_file
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 SRC_DIR = Path("/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-20000")
-DST_DIR = Path("/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-20000-fixed")
+DST_DIR = Path("/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-20000-fixed-v2")
 
 
-def copy_metadata_files(src_dir: Path, dst_dir: Path):
-    dst_dir.mkdir(parents=True, exist_ok=True)
+def normalize_key(k: str) -> str:
+    prefixes = [
+        "model._orig_mod.",
+        "_orig_mod.",
+    ]
+    for p in prefixes:
+        if k.startswith(p):
+            return k[len(p):]
+    return k
 
-    keep_suffixes = {
-        ".json",
-        ".txt",
-        ".model",
-        ".py",
-    }
 
-    keep_names = {
-        "tokenizer.json",
-        "tokenizer.model",
-        "tokenizer_config.json",
-        "special_tokens_map.json",
-        "generation_config.json",
-        "config.json",
-        "added_tokens.json",
-        "vocab.json",
-        "merges.txt",
-    }
+def copy_non_weight_files():
+    DST_DIR.mkdir(parents=True, exist_ok=True)
 
-    for path in src_dir.iterdir():
-        if path.name.startswith("model") and path.suffix in {".safetensors", ".bin"}:
+    for path in SRC_DIR.iterdir():
+        if path.suffix == ".safetensors":
+            continue
+        if path.name.endswith(".bin"):
+            continue
+        if path.name in {"model.safetensors.index.json", "pytorch_model.bin.index.json"}:
             continue
 
-        if path.name in keep_names or path.suffix in keep_suffixes:
-            target = dst_dir / path.name
-            print(f"[copy] {path} -> {target}")
-            shutil.copy2(path, target)
+        dst = DST_DIR / path.name
+        if path.is_file():
+            shutil.copy2(path, dst)
 
 
-def fix_config(dst_dir: Path):
-    config_path = dst_dir / "config.json"
+def convert_safetensors():
+    for src_file in sorted(SRC_DIR.glob("*.safetensors")):
+        print(f"[convert] {src_file.name}")
 
-    if not config_path.exists():
-        print("[warn] no config.json found")
-        return
+        sd = load_file(str(src_file))
+        new_sd = {}
 
-    with open(config_path, "r") as f:
-        cfg = json.load(f)
+        for k, v in sd.items():
+            new_k = normalize_key(k)
+            if new_k in new_sd:
+                raise RuntimeError(f"duplicate key after normalize: {new_k}")
+            new_sd[new_k] = v
 
-    # Important for custom model loading
-    cfg.setdefault("trust_remote_code", True)
-
-    with open(config_path, "w") as f:
-        json.dump(cfg, f, indent=2)
-
-    print(f"[update] {config_path}")
+        dst_file = DST_DIR / src_file.name
+        save_file(new_sd, str(dst_file))
+        print(f"[save] {dst_file}")
 
 
-def strip_state_dict_prefix(src_dir: Path, dst_dir: Path):
-    safetensors_files = sorted(src_dir.glob("*.safetensors"))
-
-    if not safetensors_files:
-        raise FileNotFoundError(f"No safetensors files found in {src_dir}")
-
-    for sf in safetensors_files:
-        if sf.name.startswith("optimizer"):
+def fix_index_json():
+    for index_name in ["model.safetensors.index.json", "pytorch_model.bin.index.json"]:
+        src_index = SRC_DIR / index_name
+        if not src_index.exists():
             continue
 
-        print(f"[load] {sf}")
-        state_dict = load_file(str(sf))
+        with open(src_index, "r") as f:
+            index = json.load(f)
 
-        new_state_dict = {}
+        if "weight_map" in index:
+            new_weight_map = {}
+            for k, v in index["weight_map"].items():
+                new_k = normalize_key(k)
+                if new_k in new_weight_map:
+                    raise RuntimeError(f"duplicate index key after normalize: {new_k}")
+                new_weight_map[new_k] = v
+            index["weight_map"] = new_weight_map
 
-        for k, v in state_dict.items():
-            new_k = k
+        dst_index = DST_DIR / index_name
+        with open(dst_index, "w") as f:
+            json.dump(index, f, indent=2)
 
-            if new_k.startswith("model._orig_mod."):
-                new_k = new_k.replace("model._orig_mod.", "", 1)
-            elif new_k.startswith("_orig_mod."):
-                new_k = new_k.replace("_orig_mod.", "", 1)
-
-            new_state_dict[new_k] = v
-
-        out_path = dst_dir / sf.name
-        print(f"[save] {out_path}")
-        save_file(new_state_dict, str(out_path))
+        print(f"[fix-index] {dst_index}")
 
 
-def main():
-    print(f"SRC_DIR={SRC_DIR}")
-    print(f"DST_DIR={DST_DIR}")
+def inspect_fixed_keys():
+    files = sorted(DST_DIR.glob("*.safetensors"))
+    if not files:
+        raise FileNotFoundError(f"No safetensors files found in {DST_DIR}")
 
-    copy_metadata_files(SRC_DIR, DST_DIR)
-    strip_state_dict_prefix(SRC_DIR, DST_DIR)
-    fix_config(DST_DIR)
+    sd = load_file(str(files[0]))
+    keys = list(sd.keys())
 
-    print("[done]")
+    bad = [k for k in keys if k.startswith("model._orig_mod.") or k.startswith("_orig_mod.")]
 
-    print("[test] loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(DST_DIR),
-        trust_remote_code=True,
-    )
+    print("[inspect] first 20 keys:")
+    for k in keys[:20]:
+        print("  ", k)
 
-    print("[test] loading model...")
+    if bad:
+        raise RuntimeError(f"still found bad keys, examples: {bad[:10]}")
+
+    print("[inspect] no model._orig_mod prefix found")
+
+
+def test_load():
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    print("[test] loading tokenizer")
+    tokenizer = AutoTokenizer.from_pretrained(str(DST_DIR), trust_remote_code=True)
+
+    print("[test] loading model")
     model = AutoModelForCausalLM.from_pretrained(
         str(DST_DIR),
         trust_remote_code=True,
@@ -119,16 +115,26 @@ def main():
         device_map="cpu",
     )
 
-    print("[test] model loaded successfully")
+    print("[test] loaded model:", type(model))
 
-    test_text = "Hello world"
-    inputs = tokenizer(test_text, return_tensors="pt")
-
+    inputs = tokenizer("Hello world", return_tensors="pt")
     with torch.no_grad():
-        outputs = model(**inputs)
+        out = model(**inputs)
 
-    print("[test] forward pass successful")
-    print(f"[test] logits shape: {outputs.logits.shape}")
+    print("[test] forward ok:", out.logits.shape)
+
+
+def main():
+    print(f"SRC_DIR={SRC_DIR}")
+    print(f"DST_DIR={DST_DIR}")
+
+    copy_non_weight_files()
+    convert_safetensors()
+    fix_index_json()
+    inspect_fixed_keys()
+    test_load()
+
+    print("[done]")
 
 
 if __name__ == "__main__":
