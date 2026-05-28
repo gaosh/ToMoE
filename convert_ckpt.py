@@ -103,7 +103,7 @@ def main():
 
     print("[done]")
 
-       print("[test] loading tokenizer...")
+    print("[test] loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(
         str(DST_DIR),
         trust_remote_code=True,
