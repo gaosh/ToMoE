@@ -140,5 +140,6 @@ torchrun --nproc_per_node="${NPROC_PER_NODE}" --master_port="${MASTER_PORT}" tra
     --num_workers "${NUM_WORKERS}" \
     --logging_steps "${LOGGING_STEPS}" \
     --save_steps "${SAVE_STEPS}" \
-    "${EXTRA_ARGS[@]}"
+    "${EXTRA_ARGS[@]}" \
+    "$@"
 #    --gradient_checkpointing \
