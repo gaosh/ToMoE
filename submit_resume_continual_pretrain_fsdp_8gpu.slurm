@@ -31,7 +31,7 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 #     echo "  RESUME_FROM_CHECKPOINT=/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-5000 sbatch $0" >&2
 #     exit 1
 # fi
-export RESUME_FROM_CHECKPOINT="/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-20000"
+export RESUME_FROM_CHECKPOINT="/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-converted"
 
 export MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-${RESUME_FROM_CHECKPOINT}}"
 export OUTPUT_DIR="${OUTPUT_DIR:-/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b}"
