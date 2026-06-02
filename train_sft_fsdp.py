@@ -156,48 +156,22 @@ def apply_chat_ids(tokenizer, messages, max_length=None, truncation=False, add_g
     )
 
 
-def assistant_labels_with_mask(tokenizer, messages, max_length):
-    rendered = tokenizer.apply_chat_template(
-        messages,
-        tokenize=True,
-        add_generation_prompt=False,
-        truncation=True,
-        max_length=max_length,
-        return_dict=True,
-        return_assistant_tokens_mask=True,
-    )
-    input_ids = rendered["input_ids"]
-    assistant_mask = rendered.get("assistant_masks") or rendered.get("assistant_tokens_mask")
-    if assistant_mask is None:
-        return None
-    if sum(int(mask) for mask in assistant_mask) == 0 and any(message["role"] == "assistant" for message in messages):
-        return None
-    labels = [token_id if int(mask) == 1 else -100 for token_id, mask in zip(input_ids, assistant_mask)]
-    return input_ids, labels
-
-
 def assistant_labels_with_prefix_spans(tokenizer, messages, max_length):
     input_ids = apply_chat_ids(tokenizer, messages, max_length=max_length, truncation=True)
     labels = [-100] * len(input_ids)
     for idx, message in enumerate(messages):
         if message["role"] != "assistant":
             continue
-        try:
-            start_ids = apply_chat_ids(
-                tokenizer,
-                messages[:idx],
-                max_length=None,
-                truncation=False,
-                add_generation_prompt=True,
-            )
-        except Exception:
-            start_ids = apply_chat_ids(
-                tokenizer,
-                messages[:idx] + [{"role": "assistant", "content": ""}],
-                max_length=None,
-                truncation=False,
-                add_generation_prompt=False,
-            )
+        # The fallback Tulu template does not contain {% generation %} blocks, so
+        # assistant-only labels are built from explicit rendered prefix spans
+        # rather than return_assistant_tokens_mask=True.
+        start_ids = apply_chat_ids(
+            tokenizer,
+            messages[:idx],
+            max_length=None,
+            truncation=False,
+            add_generation_prompt=True,
+        )
         end_ids = apply_chat_ids(tokenizer, messages[: idx + 1], max_length=None, truncation=False)
         start = min(len(start_ids), len(input_ids))
         end = min(len(end_ids), len(input_ids))
@@ -211,15 +185,7 @@ def tokenize_sft_example(example, tokenizer, max_length):
     if messages is None:
         return {"input_ids": [], "attention_mask": [], "labels": [], "valid_label_tokens": 0}
 
-    tokenized = None
-    try:
-        tokenized = assistant_labels_with_mask(tokenizer, messages, max_length)
-    except Exception:
-        tokenized = None
-    if tokenized is None:
-        input_ids, labels = assistant_labels_with_prefix_spans(tokenizer, messages, max_length)
-    else:
-        input_ids, labels = tokenized
+    input_ids, labels = assistant_labels_with_prefix_spans(tokenizer, messages, max_length)
 
     input_ids = input_ids[:max_length]
     labels = labels[:max_length]
