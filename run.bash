@@ -11,3 +11,12 @@ CUDA_VISIBLE_DEVICES=0 nohup torchrun --nproc_per_node=1 --master_port=12343 tra
 --kd_loss True \
 --dataset_list ['mix'] \
 --dataset_seed 777 --use_fsdp False  --out_dir /orange/sgao1/sgao1/saved_hns/hn_prune_llama2_7b > llama2_7b_0.5_e8_new.txt 2>&1 &
+
+accelerate launch \
+  --num_processes 8 \
+  -m lm_eval \
+  --model hf \
+  --model_args "pretrained=/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-converted,dtype=bfloat16,trust_remote_code=True" \
+  --tasks hellaswag,arc_easy,arc_challenge,piqa,winogrande,boolq,sciq \
+  --batch_size auto \
+  --output_path eval_results
