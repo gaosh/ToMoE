@@ -18,6 +18,8 @@ DATASET_CACHE_DIR="${DATASET_CACHE_DIR:-/orange/sgao1/sgao1/dataset_cache}"
 CHAT_TEMPLATE_NAME="${CHAT_TEMPLATE_NAME:-auto}"
 
 MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-4096}"
+STREAMING="${STREAMING:-1}"
+SHUFFLE_BUFFER_SIZE="${SHUFFLE_BUFFER_SIZE:-10000}"
 PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-2}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
 LEARNING_RATE="${LEARNING_RATE:-2e-6}"
@@ -76,6 +78,7 @@ echo "[sft] output: ${OUTPUT_DIR}"
 echo "[sft] dataset: ${DATASET_NAME} split=${DATASET_SPLIT}"
 echo "[sft] chat_template_name: ${CHAT_TEMPLATE_NAME}"
 echo "[sft] max_seq_length: ${MAX_SEQ_LENGTH}"
+echo "[sft] streaming: ${STREAMING}"
 echo "[sft] packing: ${PACKING}"
 echo "[sft] lr: ${LEARNING_RATE} scheduler=${LR_SCHEDULER_TYPE} warmup_ratio=${WARMUP_RATIO}"
 echo "[sft] grad_accum: ${GRADIENT_ACCUMULATION_STEPS}"
@@ -92,6 +95,9 @@ if [ -n "${TOKENIZER_NAME_OR_PATH}" ]; then
 fi
 if [ -n "${MAX_TRAIN_STEPS}" ]; then
     EXTRA_ARGS+=(--max_train_steps "${MAX_TRAIN_STEPS}")
+fi
+if [ "${STREAMING}" = "0" ]; then
+    EXTRA_ARGS+=(--no-streaming)
 fi
 if [ "${COMPILE_MODEL}" = "1" ]; then
     EXTRA_ARGS+=(--compile_model --compile_mode "${COMPILE_MODE}")
@@ -125,6 +131,7 @@ torchrun --nproc_per_node="${NPROC_PER_NODE}" --master_port="${MASTER_PORT}" tra
     --dataset_split "${DATASET_SPLIT}" \
     --chat_template_name "${CHAT_TEMPLATE_NAME}" \
     --max_seq_length "${MAX_SEQ_LENGTH}" \
+    --shuffle_buffer_size "${SHUFFLE_BUFFER_SIZE}" \
     --preprocessing_num_workers "${PREPROCESSING_NUM_WORKERS}" \
     --num_workers "${NUM_WORKERS}" \
     --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \

@@ -19,8 +19,12 @@ from contextlib import nullcontext
 import torch
 import torch.distributed as dist
 from datasets import load_dataset
+try:
+    from datasets.distributed import split_dataset_by_node
+except Exception:
+    split_dataset_by_node = None
 from torch import autocast
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, IterableDataset, get_worker_info
 
 from train_continual_pretrain_fsdp import (
     build_model,
@@ -71,6 +75,8 @@ def parse_args():
     parser.add_argument("--preprocessing_num_workers", type=int, default=8)
     parser.add_argument("--max_train_samples", type=int, default=None)
     parser.add_argument("--max_seq_length", type=int, default=4096)
+    parser.add_argument("--streaming", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--shuffle_buffer_size", type=int, default=10000)
     parser.add_argument("--packing", action="store_true")
     parser.add_argument("--debug_sft_example", action="store_true")
     parser.add_argument("--num_workers", type=int, default=4)
@@ -262,7 +268,77 @@ def pack_tokenized_dataset(dataset, tokenizer, max_seq_length):
     return Dataset.from_list(blocks)
 
 
+class StreamingSFTDataset(IterableDataset):
+    def __init__(self, dataset, tokenizer, args):
+        self.dataset = dataset
+        self.tokenizer = tokenizer
+        self.args = args
+
+    def __iter__(self):
+        dataset = self.dataset
+        worker_info = get_worker_info()
+        if worker_info is not None:
+            dataset = dataset.shard(num_shards=worker_info.num_workers, index=worker_info.id)
+        yielded = 0
+        if self.args.packing:
+            input_buffer = []
+            label_buffer = []
+            eos_id = self.tokenizer.eos_token_id
+            for example in dataset:
+                tokenized = tokenize_sft_example(example, self.tokenizer, self.args.max_seq_length)
+                if tokenized["valid_label_tokens"] <= 0:
+                    continue
+                input_buffer.extend(tokenized["input_ids"])
+                label_buffer.extend(tokenized["labels"])
+                if eos_id is not None:
+                    input_buffer.append(eos_id)
+                    label_buffer.append(-100)
+                while len(input_buffer) >= self.args.max_seq_length:
+                    input_ids = input_buffer[: self.args.max_seq_length]
+                    labels = label_buffer[: self.args.max_seq_length]
+                    input_buffer = input_buffer[self.args.max_seq_length :]
+                    label_buffer = label_buffer[self.args.max_seq_length :]
+                    valid_label_tokens = sum(1 for label in labels if label != -100)
+                    if valid_label_tokens <= 0:
+                        continue
+                    yield {
+                        "input_ids": input_ids,
+                        "attention_mask": [1] * len(input_ids),
+                        "labels": labels,
+                        "valid_label_tokens": valid_label_tokens,
+                    }
+                    yielded += 1
+                    if self.args.max_train_samples is not None and yielded >= self.args.max_train_samples:
+                        return
+        else:
+            for example in dataset:
+                tokenized = tokenize_sft_example(example, self.tokenizer, self.args.max_seq_length)
+                if tokenized["valid_label_tokens"] <= 0:
+                    continue
+                yield tokenized
+                yielded += 1
+                if self.args.max_train_samples is not None and yielded >= self.args.max_train_samples:
+                    return
+
+
 def build_sft_dataset(args, tokenizer, env):
+    if args.streaming:
+        dataset = load_dataset(
+            args.dataset_name,
+            split=args.dataset_split,
+            cache_dir=args.dataset_cache_dir,
+            streaming=True,
+        )
+        if args.shuffle_buffer_size and args.shuffle_buffer_size > 0:
+            dataset = dataset.shuffle(buffer_size=args.shuffle_buffer_size, seed=args.seed)
+        if split_dataset_by_node is not None:
+            dataset = split_dataset_by_node(dataset, rank=env.global_rank, world_size=env.world_size)
+        else:
+            dataset = dataset.shard(num_shards=env.world_size, index=env.global_rank)
+        if args.packing:
+            env.print_master("[sft] streaming packing enabled: fixed-length blocks preserve assistant-only labels.")
+        return StreamingSFTDataset(dataset, tokenizer, args)
+
     dataset = load_dataset(
         args.dataset_name,
         split=args.dataset_split,
@@ -301,6 +377,17 @@ class SFTDataCollator:
 
 
 def build_dataloader(dataset, tokenizer, args, env):
+    if args.streaming:
+        loader = DataLoader(
+            dataset,
+            batch_size=args.per_device_train_batch_size,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            persistent_workers=args.num_workers > 0,
+            collate_fn=SFTDataCollator(tokenizer),
+        )
+        return loader, None
+
     sampler = DistributedSampler(
         dataset,
         num_replicas=env.world_size,
@@ -322,6 +409,10 @@ def build_dataloader(dataset, tokenizer, args, env):
 
 
 def infer_max_steps(args, dataloader, env):
+    if args.streaming:
+        if args.max_train_steps is None:
+            raise ValueError("--streaming requires --max_train_steps because streaming datasets do not expose length.")
+        return args.max_train_steps
     steps_per_epoch = max(1, math.ceil(len(dataloader) / args.gradient_accumulation_steps))
     epoch_steps = steps_per_epoch * args.num_train_epochs
     if args.max_train_steps is None:
@@ -396,9 +487,12 @@ def train(args):
 
     tic = time.time()
     dataset = build_sft_dataset(args, tokenizer, env)
-    if len(dataset) == 0:
+    if not args.streaming and len(dataset) == 0:
         raise RuntimeError("SFT dataset is empty after tokenization/filtering; check chat template and label masking.")
-    debug_sft_example(dataset, tokenizer, env) if args.debug_sft_example else None
+    if args.debug_sft_example and not args.streaming:
+        debug_sft_example(dataset, tokenizer, env)
+    elif args.debug_sft_example:
+        env.print_master("[sft-debug] streaming mode tokenizes lazily; debug visualization is skipped before training.")
     dataloader, sampler = build_dataloader(dataset, tokenizer, args, env)
     log_elapsed(env, "dataset/dataloader build", tic)
 
@@ -464,7 +558,8 @@ def train(args):
     optimizer_step_tic = time.time()
 
     for epoch in range(start_epoch, args.num_train_epochs):
-        sampler.set_epoch(epoch)
+        if sampler is not None:
+            sampler.set_epoch(epoch)
         for micro_step, batch in enumerate(dataloader):
             input_ids = batch["input_ids"].to(env.local_rank, non_blocking=True)
             attention_mask = batch["attention_mask"].to(env.local_rank, non_blocking=True)
