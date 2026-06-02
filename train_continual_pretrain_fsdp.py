@@ -404,11 +404,14 @@ def build_scheduler(optimizer, args):
     if args.effective_max_steps is None:
         return None
 
+    min_lr_ratio = 0.1
+
     def lr_lambda(step):
         if args.warmup_steps > 0 and step < args.warmup_steps:
             return max(1e-8, float(step + 1) / float(args.warmup_steps))
         progress = float(step - args.warmup_steps) / float(max(1, args.effective_max_steps - args.warmup_steps))
-        return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+        cosine_ratio = 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
+        return min_lr_ratio + (1.0 - min_lr_ratio) * cosine_ratio
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
