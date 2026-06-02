@@ -25,7 +25,7 @@ export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-export MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/final}"
+export MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-20000-fixed}"
 export OUTPUT_DIR="${OUTPUT_DIR:-/orange/sgao1/sgao1/sft_outputs/tomoe_gated_llama3_8b_tulu3}"
 
 export DATASET_NAME="${DATASET_NAME:-allenai/tulu-3-sft-mixture}"
