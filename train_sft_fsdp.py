@@ -410,8 +410,6 @@ def build_dataloader(dataset, tokenizer, args, env):
 
 def infer_max_steps(args, dataloader, env):
     if args.streaming:
-        if args.max_train_steps is None:
-            raise ValueError("--streaming requires --max_train_steps because streaming datasets do not expose length.")
         return args.max_train_steps
     steps_per_epoch = max(1, math.ceil(len(dataloader) / args.gradient_accumulation_steps))
     epoch_steps = steps_per_epoch * args.num_train_epochs
@@ -670,7 +668,7 @@ def train(args):
                     source_config=source_config,
                 )
 
-            if global_step >= args.effective_max_steps:
+            if args.effective_max_steps is not None and global_step >= args.effective_max_steps:
                 save_checkpoint(
                     model,
                     tokenizer,
