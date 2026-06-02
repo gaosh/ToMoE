@@ -9,15 +9,17 @@ export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/final}"
+MODEL_NAME_OR_PATH="${MODEL_NAME_OR_PATH:-/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-20000-fixed}"
+TOKENIZER_NAME_OR_PATH="${TOKENIZER_NAME_OR_PATH:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-/orange/sgao1/sgao1/sft_outputs/tomoe_gated_llama3_8b_tulu3}"
 DATASET_NAME="${DATASET_NAME:-allenai/tulu-3-sft-mixture}"
 DATASET_SPLIT="${DATASET_SPLIT:-train}"
-DATASET_CACHE_DIR="${DATASET_CACHE_DIR:-}"
+DATASET_CACHE_DIR="${DATASET_CACHE_DIR:-/orange/sgao1/sgao1/dataset_cache}"
+CHAT_TEMPLATE_NAME="${CHAT_TEMPLATE_NAME:-auto}"
 
 MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-4096}"
-PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-1}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-16}"
+PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-2}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
 LEARNING_RATE="${LEARNING_RATE:-2e-6}"
 WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
 WARMUP_RATIO="${WARMUP_RATIO:-0.03}"
@@ -26,7 +28,7 @@ NUM_TRAIN_EPOCHS="${NUM_TRAIN_EPOCHS:-1}"
 MAX_TRAIN_STEPS="${MAX_TRAIN_STEPS:-}"
 MAX_GRAD_NORM="${MAX_GRAD_NORM:-1.0}"
 LOGGING_STEPS="${LOGGING_STEPS:-10}"
-SAVE_STEPS="${SAVE_STEPS:-1000}"
+SAVE_STEPS="${SAVE_STEPS:-5000}"
 
 NUM_WORKERS="${NUM_WORKERS:-4}"
 PREPROCESSING_NUM_WORKERS="${PREPROCESSING_NUM_WORKERS:-8}"
@@ -69,8 +71,10 @@ if [ "${SYNC_CUSTOM_CODE}" = "1" ] && [ -d "${MODEL_NAME_OR_PATH}" ]; then
 fi
 
 echo "[sft] model: ${MODEL_NAME_OR_PATH}"
+echo "[sft] tokenizer: ${TOKENIZER_NAME_OR_PATH:-${MODEL_NAME_OR_PATH}}"
 echo "[sft] output: ${OUTPUT_DIR}"
 echo "[sft] dataset: ${DATASET_NAME} split=${DATASET_SPLIT}"
+echo "[sft] chat_template_name: ${CHAT_TEMPLATE_NAME}"
 echo "[sft] max_seq_length: ${MAX_SEQ_LENGTH}"
 echo "[sft] packing: ${PACKING}"
 echo "[sft] lr: ${LEARNING_RATE} scheduler=${LR_SCHEDULER_TYPE} warmup_ratio=${WARMUP_RATIO}"
@@ -82,6 +86,9 @@ echo "[sft] master_port: ${MASTER_PORT}"
 EXTRA_ARGS=()
 if [ -n "${DATASET_CACHE_DIR}" ]; then
     EXTRA_ARGS+=(--dataset_cache_dir "${DATASET_CACHE_DIR}")
+fi
+if [ -n "${TOKENIZER_NAME_OR_PATH}" ]; then
+    EXTRA_ARGS+=(--tokenizer_name_or_path "${TOKENIZER_NAME_OR_PATH}")
 fi
 if [ -n "${MAX_TRAIN_STEPS}" ]; then
     EXTRA_ARGS+=(--max_train_steps "${MAX_TRAIN_STEPS}")
@@ -116,6 +123,7 @@ torchrun --nproc_per_node="${NPROC_PER_NODE}" --master_port="${MASTER_PORT}" tra
     --output_dir "${OUTPUT_DIR}" \
     --dataset_name "${DATASET_NAME}" \
     --dataset_split "${DATASET_SPLIT}" \
+    --chat_template_name "${CHAT_TEMPLATE_NAME}" \
     --max_seq_length "${MAX_SEQ_LENGTH}" \
     --preprocessing_num_workers "${PREPROCESSING_NUM_WORKERS}" \
     --num_workers "${NUM_WORKERS}" \

@@ -41,12 +41,29 @@ from train_continual_pretrain_fsdp import (
 from utils import unwrap_model
 
 
+TULU_CHAT_TEMPLATE = (
+    "{% for message in messages %}"
+    "{% if message['role'] == 'system' %}"
+    "{{ '<|system|>\\n' + message['content'] + '\\n' }}"
+    "{% elif message['role'] == 'user' %}"
+    "{{ '<|user|>\\n' + message['content'] + '\\n' }}"
+    "{% elif message['role'] == 'assistant' %}"
+    "{{ '<|assistant|>\\n' + message['content'] + eos_token }}"
+    "{% endif %}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}"
+    "{{ '<|assistant|>\\n' }}"
+    "{% endif %}"
+)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="FSDP SFT on Tulu-3-style messages data.")
 
     parser.add_argument("--model_name_or_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--tokenizer_name_or_path", type=str, default=None)
+    parser.add_argument("--chat_template_name", type=str, default="auto", choices=["auto", "tulu", "none"])
 
     parser.add_argument("--dataset_name", type=str, default="allenai/tulu-3-sft-mixture")
     parser.add_argument("--dataset_split", type=str, default="train")
@@ -99,10 +116,16 @@ def parse_args():
     return parser.parse_args()
 
 
-def ensure_tokenizer_ready(tokenizer):
+def ensure_tokenizer_ready(tokenizer, args):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
-    if tokenizer.chat_template is None:
+    if args.chat_template_name == "tulu":
+        tokenizer.chat_template = TULU_CHAT_TEMPLATE
+    elif args.chat_template_name == "auto":
+        if tokenizer.chat_template is None:
+            default_template = getattr(tokenizer, "default_chat_template", None)
+            tokenizer.chat_template = default_template or TULU_CHAT_TEMPLATE
+    elif tokenizer.chat_template is None:
         raise ValueError("Tokenizer does not define chat_template; SFT requires tokenizer.apply_chat_template.")
 
 
@@ -368,7 +391,7 @@ def train(args):
     tokenizer = maybe_load_tokenizer(args, env)
     if tokenizer is None:
         raise RuntimeError("SFT requires a tokenizer.")
-    ensure_tokenizer_ready(tokenizer)
+    ensure_tokenizer_ready(tokenizer, args)
     log_elapsed(env, "tokenizer load", tic)
 
     tic = time.time()
