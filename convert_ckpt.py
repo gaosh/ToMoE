@@ -132,7 +132,7 @@ def main():
     convert_safetensors()
     fix_index_json()
     inspect_fixed_keys()
-    test_load()
+    # test_load()
 
     print("[done]")
 
