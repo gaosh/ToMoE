@@ -10,7 +10,6 @@ changes the data and loss semantics:
 """
 
 import argparse
-import inspect
 import math
 import os
 import time
@@ -42,7 +41,6 @@ from train_continual_pretrain_fsdp import (
     validate_output_dir,
     wrap_fsdp,
 )
-from utils import unwrap_model
 
 
 TULU_CHAT_TEMPLATE = (
@@ -323,14 +321,6 @@ def reduce_token_stats(valid_label_tokens, total_tokens, total_tokens_including_
     return [float(item) for item in stats.tolist()]
 
 
-def supports_output_router_logits(model):
-    try:
-        signature = inspect.signature(unwrap_model(model).forward)
-    except Exception:
-        return True
-    return "output_router_logits" in signature.parameters
-
-
 def train(args):
     env = setup_distributed()
     torch.manual_seed(args.seed + env.global_rank)
@@ -360,7 +350,6 @@ def train(args):
     model = wrap_fsdp(model, args, env)
     log_elapsed(env, "FSDP wrap", tic)
     model = maybe_compile_model(model, args, env)
-    output_router_logits = supports_output_router_logits(model) and args.moe_aux_loss_weight > 0
 
     args.effective_max_steps = infer_max_steps(args, dataloader, env)
     env.print_master(f"Effective max SFT optimizer steps: {args.effective_max_steps}")
@@ -428,14 +417,12 @@ def train(args):
 
             with sync_context:
                 with autocast(device_type="cuda", dtype=dtype, enabled=args.bf16):
-                    model_kwargs = {
-                        "input_ids": input_ids,
-                        "attention_mask": attention_mask,
-                        "labels": labels,
-                    }
-                    if output_router_logits:
-                        model_kwargs["output_router_logits"] = True
-                    outputs = model(**model_kwargs)
+                    outputs = model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                        output_router_logits=args.moe_aux_loss_weight > 0,
+                    )
                     lm_loss = outputs.loss
                     balance_loss = load_balancing_loss(getattr(outputs, "router_logits", None))
                     if balance_loss is None:
