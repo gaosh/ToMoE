@@ -28,7 +28,6 @@ from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 from train_continual_pretrain_fsdp import (
     build_model,
     build_optimizer,
-    load_balancing_loss,
     load_source_config,
     load_training_state,
     log_elapsed,
@@ -321,6 +320,37 @@ def reduce_token_stats(valid_label_tokens, total_tokens, total_tokens_including_
     return [float(item) for item in stats.tolist()]
 
 
+def load_balancing_loss(router_logits, attention_mask):
+    if router_logits is None:
+        return None
+    if torch.is_tensor(router_logits):
+        router_logits = (router_logits,)
+
+    token_mask = attention_mask.reshape(-1).bool()
+    losses = []
+    for layer_router in router_logits:
+        if layer_router is None:
+            continue
+        router_probs = layer_router.float().reshape(-1, layer_router.shape[-1])
+        if router_probs.numel() == 0:
+            continue
+        if token_mask.shape[0] == router_probs.shape[0]:
+            router_probs = router_probs[token_mask]
+        if router_probs.numel() == 0:
+            continue
+        if router_probs.min() < 0 or router_probs.max() > 1.0:
+            router_probs = torch.softmax(router_probs, dim=-1)
+        num_experts = router_probs.shape[-1]
+        selected_experts = torch.argmax(router_probs, dim=-1)
+        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=num_experts).float()
+        tokens_per_expert = expert_mask.mean(dim=0)
+        router_prob_per_expert = router_probs.mean(dim=0)
+        losses.append(num_experts * torch.sum(tokens_per_expert * router_prob_per_expert))
+    if not losses:
+        return None
+    return torch.stack(losses).mean()
+
+
 def train(args):
     env = setup_distributed()
     torch.manual_seed(args.seed + env.global_rank)
@@ -424,7 +454,10 @@ def train(args):
                         output_router_logits=args.moe_aux_loss_weight > 0,
                     )
                     lm_loss = outputs.loss
-                    balance_loss = load_balancing_loss(getattr(outputs, "router_logits", None))
+                    balance_loss = load_balancing_loss(
+                        getattr(outputs, "router_logits", None),
+                        attention_mask=attention_mask,
+                    )
                     if balance_loss is None:
                         balance_loss = lm_loss.new_zeros(())
                     total_loss = lm_loss + args.moe_aux_loss_weight * balance_loss
