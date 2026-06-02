@@ -6,7 +6,7 @@ from pathlib import Path
 
 from safetensors.torch import load_file, save_file
 
-SRC_DIR = Path("/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-20000")
+SRC_DIR = Path("/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/final")
 DST_DIR = Path("/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-converted")
 
 
