@@ -18,7 +18,6 @@ DATASET_CACHE_DIR="${DATASET_CACHE_DIR:-/orange/sgao1/sgao1/dataset_cache}"
 CHAT_TEMPLATE_NAME="${CHAT_TEMPLATE_NAME:-auto}"
 
 MAX_SEQ_LENGTH="${MAX_SEQ_LENGTH:-4096}"
-STREAMING="${STREAMING:-1}"
 SHUFFLE_BUFFER_SIZE="${SHUFFLE_BUFFER_SIZE:-10000}"
 PER_DEVICE_TRAIN_BATCH_SIZE="${PER_DEVICE_TRAIN_BATCH_SIZE:-2}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
@@ -33,7 +32,6 @@ LOGGING_STEPS="${LOGGING_STEPS:-10}"
 SAVE_STEPS="${SAVE_STEPS:-5000}"
 
 NUM_WORKERS="${NUM_WORKERS:-4}"
-PREPROCESSING_NUM_WORKERS="${PREPROCESSING_NUM_WORKERS:-8}"
 FSDP_LAYER_CLS="${FSDP_LAYER_CLS:-LlamaDecoderLayer}"
 MOE_AUX_LOSS_WEIGHT="${MOE_AUX_LOSS_WEIGHT:-0.01}"
 TOMOE_MOE_IMPL="${TOMOE_MOE_IMPL:-grouped_gemm}"
@@ -48,7 +46,6 @@ LOAD_MODEL_ON_GPU="${LOAD_MODEL_ON_GPU:-1}"
 GRADIENT_CHECKPOINTING="${GRADIENT_CHECKPOINTING:-0}"
 SYNC_CUSTOM_CODE="${SYNC_CUSTOM_CODE:-1}"
 USE_8BIT_ADAM="${USE_8BIT_ADAM:-1}"
-PACKING="${PACKING:-0}"
 SAVE_OPTIMIZER="${SAVE_OPTIMIZER:-0}"
 SAVE_OPTIMIZER_LATEST_ONLY="${SAVE_OPTIMIZER_LATEST_ONLY:-0}"
 SAVE_AT_ITER0="${SAVE_AT_ITER0:-0}"
@@ -78,8 +75,7 @@ echo "[sft] output: ${OUTPUT_DIR}"
 echo "[sft] dataset: ${DATASET_NAME} split=${DATASET_SPLIT}"
 echo "[sft] chat_template_name: ${CHAT_TEMPLATE_NAME}"
 echo "[sft] max_seq_length: ${MAX_SEQ_LENGTH}"
-echo "[sft] streaming: ${STREAMING}"
-echo "[sft] packing: ${PACKING}"
+echo "[sft] streaming: 1"
 echo "[sft] lr: ${LEARNING_RATE} scheduler=${LR_SCHEDULER_TYPE} warmup_ratio=${WARMUP_RATIO}"
 echo "[sft] grad_accum: ${GRADIENT_ACCUMULATION_STEPS}"
 echo "[sft] save_steps: ${SAVE_STEPS}"
@@ -96,9 +92,6 @@ fi
 if [ -n "${MAX_TRAIN_STEPS}" ]; then
     EXTRA_ARGS+=(--max_train_steps "${MAX_TRAIN_STEPS}")
 fi
-if [ "${STREAMING}" = "0" ]; then
-    EXTRA_ARGS+=(--no-streaming)
-fi
 if [ "${COMPILE_MODEL}" = "1" ]; then
     EXTRA_ARGS+=(--compile_model --compile_mode "${COMPILE_MODE}")
 fi
@@ -110,9 +103,6 @@ if [ "${GRADIENT_CHECKPOINTING}" = "1" ]; then
 fi
 if [ "${USE_8BIT_ADAM}" = "1" ]; then
     EXTRA_ARGS+=(--use_8bit_adam)
-fi
-if [ "${PACKING}" = "1" ]; then
-    EXTRA_ARGS+=(--packing)
 fi
 if [ "${SAVE_OPTIMIZER}" = "1" ]; then
     EXTRA_ARGS+=(--save_optimizer)
@@ -132,7 +122,6 @@ torchrun --nproc_per_node="${NPROC_PER_NODE}" --master_port="${MASTER_PORT}" tra
     --chat_template_name "${CHAT_TEMPLATE_NAME}" \
     --max_seq_length "${MAX_SEQ_LENGTH}" \
     --shuffle_buffer_size "${SHUFFLE_BUFFER_SIZE}" \
-    --preprocessing_num_workers "${PREPROCESSING_NUM_WORKERS}" \
     --num_workers "${NUM_WORKERS}" \
     --per_device_train_batch_size "${PER_DEVICE_TRAIN_BATCH_SIZE}" \
     --gradient_accumulation_steps "${GRADIENT_ACCUMULATION_STEPS}" \
