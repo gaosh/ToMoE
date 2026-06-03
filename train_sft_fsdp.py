@@ -23,7 +23,7 @@ try:
 except Exception:
     split_dataset_by_node = None
 from torch import autocast
-from torch.utils.data import DataLoader, IterableDataset, get_worker_info
+from torch.utils.data import DataLoader, IterableDataset
 
 from train_continual_pretrain_fsdp import (
     build_model,
@@ -217,9 +217,6 @@ class StreamingSFTDataset(IterableDataset):
 
     def __iter__(self):
         dataset = self.dataset
-        worker_info = get_worker_info()
-        if worker_info is not None:
-            dataset = dataset.shard(num_shards=worker_info.num_workers, index=worker_info.id)
         yielded = 0
         for example in dataset:
             tokenized = tokenize_sft_example(example, self.tokenizer, self.args.max_seq_length)
