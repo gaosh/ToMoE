@@ -16,7 +16,8 @@ accelerate launch \
   --num_processes 8 \
   -m lm_eval \
   --model hf \
+  --apply_chat_template \
   --model_args "pretrained=/orange/sgao1/sgao1/continual_pretrain_outputs/tomoe_gated_llama3_8b/checkpoint-converted,dtype=bfloat16,trust_remote_code=True" \
   --tasks hellaswag,arc_easy,arc_challenge,piqa,winogrande,boolq,sciq \
   --batch_size auto \
-  --output_path eval_results
+  #--output_path eval_results

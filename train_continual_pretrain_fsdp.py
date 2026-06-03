@@ -370,12 +370,14 @@ def wrap_fsdp(model, args, env):
 
 
 def build_optimizer(model, args, env):
-    decay, no_decay = [], []
+    decay, no_decay, gated_attn_bias_decay = [], [], []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
         lname = name.lower()
-        if param.ndim < 2 or lname.endswith("bias") or "norm" in lname or "ln" in lname:
+        if "gated_attn" in lname and lname.endswith("gate_up.bias"):
+            gated_attn_bias_decay.append(param)
+        elif param.ndim < 2 or lname.endswith("bias") or "norm" in lname or "ln" in lname:
             no_decay.append(param)
         else:
             decay.append(param)
@@ -392,6 +394,7 @@ def build_optimizer(model, args, env):
     return optimizer_cls(
         [
             {"params": decay, "weight_decay": args.weight_decay},
+            {"params": gated_attn_bias_decay, "weight_decay": 0.05},
             {"params": no_decay, "weight_decay": 0.0},
         ],
         lr=args.learning_rate,
