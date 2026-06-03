@@ -289,19 +289,33 @@ def get_streaming_split_num_examples(args, env):
 
 
 def infer_max_steps(args, dataloader, env):
-    if args.max_train_steps is not None:
-        return args.max_train_steps
     num_examples = get_streaming_split_num_examples(args, env)
     if num_examples is None:
-        env.print_master("[sft] streaming split size unknown; using constant LR/no step limit.")
-        return None
+        if args.max_train_steps is None:
+            env.print_master("[sft] streaming split size unknown; using constant LR/no step limit.")
+        else:
+            env.print_master(
+                f"[sft] streaming split size unknown; using max_train_steps={args.max_train_steps}."
+            )
+        return args.max_train_steps
     examples_per_step = (
         env.world_size
         * args.per_device_train_batch_size
         * args.gradient_accumulation_steps
     )
     steps_per_epoch = max(1, math.ceil(num_examples / examples_per_step))
-    return steps_per_epoch * args.num_train_epochs
+    inferred_total_steps = steps_per_epoch * args.num_train_epochs
+    env.print_master(
+        f"[sft] estimated optimizer iterations per epoch: {steps_per_epoch} "
+        f"(examples={num_examples}, examples_per_step={examples_per_step})"
+    )
+    if args.max_train_steps is not None:
+        env.print_master(
+            f"[sft] max_train_steps={args.max_train_steps}; "
+            f"dataset-derived total steps for {args.num_train_epochs} epoch(s): {inferred_total_steps}"
+        )
+        return args.max_train_steps
+    return inferred_total_steps
 
 
 def build_scheduler(optimizer, args):
