@@ -33,7 +33,6 @@ from train_continual_pretrain_fsdp import (
     log_elapsed,
     maybe_compile_model,
     maybe_load_tokenizer,
-    reduce_loss_stats,
     save_checkpoint,
     setup_distributed,
     validate_loaded_config,
@@ -310,14 +309,42 @@ def build_scheduler(optimizer, args):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def reduce_token_stats(valid_label_tokens, total_tokens, total_tokens_including_padding, device):
+def distributed_sum_scalar(value, device, env, name, global_step):
+    t = torch.tensor(float(value), device=device, dtype=torch.float64)
+    if dist.is_available() and dist.is_initialized():
+        print(
+            f"[rank {env.global_rank}] before all_reduce {name} at global_step={global_step}",
+            flush=True,
+        )
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+    return float(t.item())
+
+
+def distributed_reduce_loss_sums(loss_sums, loss_count, device, env, global_step):
     stats = torch.tensor(
-        [valid_label_tokens, total_tokens, total_tokens_including_padding],
+        [
+            loss_sums["total"],
+            loss_sums["lm"],
+            loss_sums["balance"],
+            float(loss_count),
+        ],
         device=device,
         dtype=torch.float64,
     )
-    dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-    return [float(item) for item in stats.tolist()]
+    if dist.is_available() and dist.is_initialized():
+        print(
+            f"[rank {env.global_rank}] before all_reduce loss stats at global_step={global_step}",
+            flush=True,
+        )
+        dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+    return {
+        "sums": {
+            "total": float(stats[0].item()),
+            "lm": float(stats[1].item()),
+            "balance": float(stats[2].item()),
+        },
+        "count": float(stats[3].item()),
+    }
 
 
 def load_balancing_loss(router_logits, attention_mask):
@@ -427,7 +454,11 @@ def train(args):
     running_valid_label_tokens = 0.0
     running_total_tokens = 0.0
     running_total_tokens_including_padding = 0.0
-    step_total_tokens = 0.0
+    accum_loss_sums = {"total": 0.0, "lm": 0.0, "balance": 0.0}
+    accum_loss_count = 0
+    accum_real_tokens = 0.0
+    accum_pad_tokens = 0.0
+    accum_loss_tokens = 0.0
     log_tic = time.time()
     optimizer_step_tic = time.time()
 
@@ -467,14 +498,13 @@ def train(args):
                     raw_total_loss = total_loss.detach()
                 backward_loss.backward()
 
-            running_loss_sums["total"] += float(raw_total_loss.item())
-            running_loss_sums["lm"] += float(raw_lm_loss.item())
-            running_loss_sums["balance"] += float(raw_balance_loss.item())
-            running_loss_count += 1
-            running_valid_label_tokens += valid_label_tokens
-            running_total_tokens += total_tokens
-            running_total_tokens_including_padding += total_tokens_including_padding
-            step_total_tokens += total_tokens
+            accum_loss_sums["total"] += float(raw_total_loss.item())
+            accum_loss_sums["lm"] += float(raw_lm_loss.item())
+            accum_loss_sums["balance"] += float(raw_balance_loss.item())
+            accum_loss_count += 1
+            accum_real_tokens += total_tokens
+            accum_pad_tokens += total_tokens_including_padding
+            accum_loss_tokens += valid_label_tokens
 
             if not should_sync:
                 continue
@@ -486,30 +516,62 @@ def train(args):
             optimizer.zero_grad(set_to_none=True)
 
             global_step += 1
-            _, global_step_tokens, _ = reduce_token_stats(
-                0,
-                step_total_tokens,
-                0,
-                device=torch.device("cuda", env.local_rank),
+            reduction_device = torch.device("cuda", env.local_rank)
+            global_real_tokens = distributed_sum_scalar(
+                accum_real_tokens,
+                device=reduction_device,
+                env=env,
+                name="token stats real_tokens",
+                global_step=global_step,
             )
-            consumed_tokens += int(global_step_tokens)
-            step_total_tokens = 0.0
+            global_pad_tokens = distributed_sum_scalar(
+                accum_pad_tokens,
+                device=reduction_device,
+                env=env,
+                name="token stats pad_tokens",
+                global_step=global_step,
+            )
+            global_loss_tokens = distributed_sum_scalar(
+                accum_loss_tokens,
+                device=reduction_device,
+                env=env,
+                name="token stats loss_tokens",
+                global_step=global_step,
+            )
+            global_loss_stats = distributed_reduce_loss_sums(
+                accum_loss_sums,
+                accum_loss_count,
+                device=reduction_device,
+                env=env,
+                global_step=global_step,
+            )
+            consumed_tokens += int(global_real_tokens)
+            running_valid_label_tokens += global_loss_tokens
+            running_total_tokens += global_real_tokens
+            running_total_tokens_including_padding += global_pad_tokens
+            running_loss_sums["total"] += global_loss_stats["sums"]["total"]
+            running_loss_sums["lm"] += global_loss_stats["sums"]["lm"]
+            running_loss_sums["balance"] += global_loss_stats["sums"]["balance"]
+            running_loss_count += global_loss_stats["count"]
+            accum_loss_sums = {"total": 0.0, "lm": 0.0, "balance": 0.0}
+            accum_loss_count = 0
+            accum_real_tokens = 0.0
+            accum_pad_tokens = 0.0
+            accum_loss_tokens = 0.0
             running_step_time += time.time() - optimizer_step_tic
             optimizer_step_tic = time.time()
 
             if args.logging_steps > 0 and global_step % args.logging_steps == 0:
                 elapsed = max(time.time() - log_tic, 1e-6)
-                avg_losses = reduce_loss_stats(
-                    running_loss_sums,
-                    running_loss_count,
-                    device=torch.device("cuda", env.local_rank),
-                )
-                valid, total, total_with_pad = reduce_token_stats(
-                    running_valid_label_tokens,
-                    running_total_tokens,
-                    running_total_tokens_including_padding,
-                    device=torch.device("cuda", env.local_rank),
-                )
+                avg_loss_count = max(float(running_loss_count), 1.0)
+                avg_losses = {
+                    "total": running_loss_sums["total"] / avg_loss_count,
+                    "lm": running_loss_sums["lm"] / avg_loss_count,
+                    "balance": running_loss_sums["balance"] / avg_loss_count,
+                }
+                valid = running_valid_label_tokens
+                total = running_total_tokens
+                total_with_pad = running_total_tokens_including_padding
                 env.print_master(
                     f"global_step={global_step} loss={avg_losses['total']:.4f} "
                     f"lm_loss={avg_losses['lm']:.4f} load_balance_loss={avg_losses['balance']:.4f} "
