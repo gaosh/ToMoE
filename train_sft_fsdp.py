@@ -152,6 +152,20 @@ def apply_chat_ids(tokenizer, messages, max_length=None, truncation=False, add_g
     )
 
 
+def dummy_sft_example(tokenizer):
+    token_id = tokenizer.pad_token_id
+    if token_id is None:
+        token_id = tokenizer.eos_token_id
+    if token_id is None:
+        token_id = 0
+    return {
+        "input_ids": [int(token_id)],
+        "attention_mask": [0],
+        "labels": [-100],
+        "valid_label_tokens": 0,
+    }
+
+
 def assistant_labels_with_prefix_spans(tokenizer, messages, max_length):
     input_ids = apply_chat_ids(tokenizer, messages, max_length=max_length, truncation=True)
     labels = [-100] * len(input_ids)
@@ -179,13 +193,15 @@ def assistant_labels_with_prefix_spans(tokenizer, messages, max_length):
 def tokenize_sft_example(example, tokenizer, max_length):
     messages = normalize_messages(example.get("messages"))
     if messages is None:
-        return {"input_ids": [], "attention_mask": [], "labels": [], "valid_label_tokens": 0}
+        return dummy_sft_example(tokenizer)
 
     input_ids, labels = assistant_labels_with_prefix_spans(tokenizer, messages, max_length)
 
     input_ids = input_ids[:max_length]
     labels = labels[:max_length]
     valid_label_tokens = sum(1 for label in labels if label != -100)
+    if valid_label_tokens <= 0:
+        return dummy_sft_example(tokenizer)
     return {
         "input_ids": input_ids,
         "attention_mask": [1] * len(input_ids),
@@ -208,8 +224,6 @@ class StreamingSFTDataset(IterableDataset):
         yielded = 0
         for example in dataset:
             tokenized = tokenize_sft_example(example, self.tokenizer, self.args.max_seq_length)
-            if tokenized["valid_label_tokens"] <= 0:
-                continue
             yield tokenized
             yielded += 1
             if self.args.max_train_samples is not None and yielded >= self.args.max_train_samples:
@@ -347,6 +361,18 @@ def distributed_reduce_loss_sums(loss_sums, loss_count, device, env, global_step
     }
 
 
+def distributed_all_ranks_have_batch(has_batch, device, env, epoch, micro_step):
+    t = torch.tensor(1.0 if has_batch else 0.0, device=device, dtype=torch.float64)
+    if dist.is_available() and dist.is_initialized():
+        print(
+            f"[rank {env.global_rank}] before all_reduce dataloader availability "
+            f"at epoch={epoch} micro_step={micro_step}",
+            flush=True,
+        )
+        dist.all_reduce(t, op=dist.ReduceOp.MIN)
+    return bool(t.item() > 0.5)
+
+
 def load_balancing_loss(router_logits, attention_mask):
     if router_logits is None:
         return None
@@ -463,7 +489,26 @@ def train(args):
     optimizer_step_tic = time.time()
 
     for epoch in range(start_epoch, args.num_train_epochs):
-        for micro_step, batch in enumerate(dataloader):
+        dataloader_iter = iter(dataloader)
+        micro_step = 0
+        while True:
+            try:
+                batch = next(dataloader_iter)
+                has_batch = True
+            except StopIteration:
+                batch = None
+                has_batch = False
+
+            reduction_device = torch.device("cuda", env.local_rank)
+            if not distributed_all_ranks_have_batch(
+                has_batch,
+                device=reduction_device,
+                env=env,
+                epoch=epoch,
+                micro_step=micro_step,
+            ):
+                break
+
             input_ids = batch["input_ids"].to(env.local_rank, non_blocking=True)
             attention_mask = batch["attention_mask"].to(env.local_rank, non_blocking=True)
             labels = batch["labels"].to(env.local_rank, non_blocking=True)
@@ -474,24 +519,42 @@ def train(args):
 
             accumulation_index = micro_step % args.gradient_accumulation_steps
             should_sync = accumulation_index == args.gradient_accumulation_steps - 1
+            micro_step += 1
             sync_context = nullcontext() if should_sync else model.no_sync()
+            has_loss_tokens = valid_label_tokens > 0
+            model_attention_mask = attention_mask
+            if total_tokens == 0:
+                model_attention_mask = torch.ones_like(attention_mask)
 
             with sync_context:
                 with autocast(device_type="cuda", dtype=dtype, enabled=args.bf16):
                     outputs = model(
                         input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels,
+                        attention_mask=model_attention_mask,
+                        labels=labels if has_loss_tokens else None,
                         output_router_logits=args.moe_aux_loss_weight > 0,
                     )
-                    lm_loss = outputs.loss
-                    balance_loss = load_balancing_loss(
-                        getattr(outputs, "router_logits", None),
-                        attention_mask=attention_mask,
-                    )
-                    if balance_loss is None:
-                        balance_loss = lm_loss.new_zeros(())
-                    total_loss = lm_loss + args.moe_aux_loss_weight * balance_loss
+                    if has_loss_tokens:
+                        lm_loss = outputs.loss
+                        balance_loss = load_balancing_loss(
+                            getattr(outputs, "router_logits", None),
+                            attention_mask=attention_mask,
+                        )
+                        if balance_loss is None:
+                            balance_loss = lm_loss.new_zeros(())
+                        total_loss = lm_loss + args.moe_aux_loss_weight * balance_loss
+                    else:
+                        zero_loss = outputs.logits.float().sum() * 0.0
+                        router_logits = getattr(outputs, "router_logits", None)
+                        if router_logits is not None:
+                            if torch.is_tensor(router_logits):
+                                router_logits = (router_logits,)
+                            for layer_router in router_logits:
+                                if layer_router is not None:
+                                    zero_loss = zero_loss + layer_router.float().sum() * 0.0
+                        lm_loss = zero_loss
+                        balance_loss = zero_loss
+                        total_loss = zero_loss
                     backward_loss = total_loss / args.gradient_accumulation_steps
                     raw_lm_loss = lm_loss.detach()
                     raw_balance_loss = balance_loss.detach()
@@ -516,7 +579,6 @@ def train(args):
             optimizer.zero_grad(set_to_none=True)
 
             global_step += 1
-            reduction_device = torch.device("cuda", env.local_rank)
             global_real_tokens = distributed_sum_scalar(
                 accum_real_tokens,
                 device=reduction_device,
