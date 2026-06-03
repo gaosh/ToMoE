@@ -30,7 +30,6 @@ from train_continual_pretrain_fsdp import (
     build_optimizer,
     load_source_config,
     load_training_state,
-    log_elapsed,
     maybe_compile_model,
     maybe_load_tokenizer,
     save_checkpoint,
@@ -323,18 +322,14 @@ def build_scheduler(optimizer, args):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def distributed_sum_scalar(value, device, env, name, global_step):
+def distributed_sum_scalar(value, device):
     t = torch.tensor(float(value), device=device, dtype=torch.float64)
     if dist.is_available() and dist.is_initialized():
-        print(
-            f"[rank {env.global_rank}] before all_reduce {name} at global_step={global_step}",
-            flush=True,
-        )
         dist.all_reduce(t, op=dist.ReduceOp.SUM)
     return float(t.item())
 
 
-def distributed_reduce_loss_sums(loss_sums, loss_count, device, env, global_step):
+def distributed_reduce_loss_sums(loss_sums, loss_count, device):
     stats = torch.tensor(
         [
             loss_sums["total"],
@@ -346,10 +341,6 @@ def distributed_reduce_loss_sums(loss_sums, loss_count, device, env, global_step
         dtype=torch.float64,
     )
     if dist.is_available() and dist.is_initialized():
-        print(
-            f"[rank {env.global_rank}] before all_reduce loss stats at global_step={global_step}",
-            flush=True,
-        )
         dist.all_reduce(stats, op=dist.ReduceOp.SUM)
     return {
         "sums": {
@@ -361,15 +352,10 @@ def distributed_reduce_loss_sums(loss_sums, loss_count, device, env, global_step
     }
 
 
-def distributed_dataloader_status(has_batch, failed, device, env, epoch, micro_step):
+def distributed_dataloader_status(has_batch, failed, device):
     status = -1.0 if failed else (1.0 if has_batch else 0.0)
     t = torch.tensor(status, device=device, dtype=torch.float64)
     if dist.is_available() and dist.is_initialized():
-        print(
-            f"[rank {env.global_rank}] before all_reduce dataloader status "
-            f"at epoch={epoch} micro_step={micro_step}",
-            flush=True,
-        )
         dist.all_reduce(t, op=dist.ReduceOp.MIN)
     global_status = float(t.item())
     any_failed = global_status < 0.0
@@ -416,35 +402,24 @@ def train(args):
     if env.global_rank == 0:
         os.makedirs(args.output_dir, exist_ok=True)
 
-    tic = time.time()
     tokenizer = maybe_load_tokenizer(args, env)
     if tokenizer is None:
         raise RuntimeError("SFT requires a tokenizer.")
     ensure_tokenizer_ready(tokenizer, args)
-    log_elapsed(env, "tokenizer load", tic)
 
-    tic = time.time()
     dataset = build_sft_dataset(args, tokenizer, env)
     dataloader = build_dataloader(dataset, tokenizer, args, env)
-    log_elapsed(env, "dataset/dataloader build", tic)
 
-    tic = time.time()
     model = build_model(args, env)
-    log_elapsed(env, "model from_pretrained", tic)
     validate_loaded_config(model, source_config, env)
 
-    tic = time.time()
     model = wrap_fsdp(model, args, env)
-    log_elapsed(env, "FSDP wrap", tic)
     model = maybe_compile_model(model, args, env)
 
     args.effective_max_steps = infer_max_steps(args, dataloader, env)
-    env.print_master(f"Effective max SFT optimizer steps: {args.effective_max_steps}")
 
-    tic = time.time()
     optimizer = build_optimizer(model, args, env)
     scheduler = build_scheduler(optimizer, args)
-    log_elapsed(env, "optimizer/scheduler build", tic)
 
     global_step = 0
     start_epoch = 0
@@ -481,15 +456,9 @@ def train(args):
     running_loss_sums = {"total": 0.0, "lm": 0.0, "balance": 0.0}
     running_loss_count = 0
     running_step_time = 0.0
-    running_valid_label_tokens = 0.0
-    running_total_tokens = 0.0
-    running_total_tokens_including_padding = 0.0
     accum_loss_sums = {"total": 0.0, "lm": 0.0, "balance": 0.0}
     accum_loss_count = 0
     accum_real_tokens = 0.0
-    accum_pad_tokens = 0.0
-    accum_loss_tokens = 0.0
-    log_tic = time.time()
     optimizer_step_tic = time.time()
 
     for epoch in range(start_epoch, args.num_train_epochs):
@@ -513,9 +482,6 @@ def train(args):
                 has_batch,
                 failed=dataloader_error is not None,
                 device=reduction_device,
-                env=env,
-                epoch=epoch,
-                micro_step=micro_step,
             )
             if any_dataloader_failed:
                 if dataloader_error is not None:
@@ -533,7 +499,6 @@ def train(args):
 
             valid_label_tokens = int((labels != -100).sum().item())
             total_tokens = int(attention_mask.sum().item())
-            total_tokens_including_padding = int(input_ids.numel())
 
             accumulation_index = micro_step % args.gradient_accumulation_steps
             should_sync = accumulation_index == args.gradient_accumulation_steps - 1
@@ -584,8 +549,6 @@ def train(args):
             accum_loss_sums["balance"] += float(raw_balance_loss.item())
             accum_loss_count += 1
             accum_real_tokens += total_tokens
-            accum_pad_tokens += total_tokens_including_padding
-            accum_loss_tokens += valid_label_tokens
 
             if not should_sync:
                 continue
@@ -600,35 +563,13 @@ def train(args):
             global_real_tokens = distributed_sum_scalar(
                 accum_real_tokens,
                 device=reduction_device,
-                env=env,
-                name="token stats real_tokens",
-                global_step=global_step,
-            )
-            global_pad_tokens = distributed_sum_scalar(
-                accum_pad_tokens,
-                device=reduction_device,
-                env=env,
-                name="token stats pad_tokens",
-                global_step=global_step,
-            )
-            global_loss_tokens = distributed_sum_scalar(
-                accum_loss_tokens,
-                device=reduction_device,
-                env=env,
-                name="token stats loss_tokens",
-                global_step=global_step,
             )
             global_loss_stats = distributed_reduce_loss_sums(
                 accum_loss_sums,
                 accum_loss_count,
                 device=reduction_device,
-                env=env,
-                global_step=global_step,
             )
             consumed_tokens += int(global_real_tokens)
-            running_valid_label_tokens += global_loss_tokens
-            running_total_tokens += global_real_tokens
-            running_total_tokens_including_padding += global_pad_tokens
             running_loss_sums["total"] += global_loss_stats["sums"]["total"]
             running_loss_sums["lm"] += global_loss_stats["sums"]["lm"]
             running_loss_sums["balance"] += global_loss_stats["sums"]["balance"]
@@ -636,38 +577,25 @@ def train(args):
             accum_loss_sums = {"total": 0.0, "lm": 0.0, "balance": 0.0}
             accum_loss_count = 0
             accum_real_tokens = 0.0
-            accum_pad_tokens = 0.0
-            accum_loss_tokens = 0.0
             running_step_time += time.time() - optimizer_step_tic
             optimizer_step_tic = time.time()
 
             if args.logging_steps > 0 and global_step % args.logging_steps == 0:
-                elapsed = max(time.time() - log_tic, 1e-6)
                 avg_loss_count = max(float(running_loss_count), 1.0)
                 avg_losses = {
                     "total": running_loss_sums["total"] / avg_loss_count,
                     "lm": running_loss_sums["lm"] / avg_loss_count,
                     "balance": running_loss_sums["balance"] / avg_loss_count,
                 }
-                valid = running_valid_label_tokens
-                total = running_total_tokens
-                total_with_pad = running_total_tokens_including_padding
                 env.print_master(
                     f"global_step={global_step} loss={avg_losses['total']:.4f} "
                     f"lm_loss={avg_losses['lm']:.4f} load_balance_loss={avg_losses['balance']:.4f} "
                     f"lr={optimizer.param_groups[0]['lr']:.3e} "
-                    f"step_time={running_step_time / args.logging_steps:.3f}s "
-                    f"tokens/sec={total / elapsed:.2f} tokens/sec_including_padding={total_with_pad / elapsed:.2f} "
-                    f"valid_label_tokens={int(valid)} total_tokens={int(total)} "
-                    f"total_tokens_including_padding={int(total_with_pad)}"
+                    f"step_time={running_step_time / args.logging_steps:.3f}s"
                 )
                 running_loss_sums = {"total": 0.0, "lm": 0.0, "balance": 0.0}
                 running_loss_count = 0
                 running_step_time = 0.0
-                running_valid_label_tokens = 0.0
-                running_total_tokens = 0.0
-                running_total_tokens_including_padding = 0.0
-                log_tic = time.time()
 
             if args.save_steps > 0 and global_step % args.save_steps == 0:
                 save_checkpoint(
