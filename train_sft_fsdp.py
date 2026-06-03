@@ -361,16 +361,20 @@ def distributed_reduce_loss_sums(loss_sums, loss_count, device, env, global_step
     }
 
 
-def distributed_all_ranks_have_batch(has_batch, device, env, epoch, micro_step):
-    t = torch.tensor(1.0 if has_batch else 0.0, device=device, dtype=torch.float64)
+def distributed_dataloader_status(has_batch, failed, device, env, epoch, micro_step):
+    status = -1.0 if failed else (1.0 if has_batch else 0.0)
+    t = torch.tensor(status, device=device, dtype=torch.float64)
     if dist.is_available() and dist.is_initialized():
         print(
-            f"[rank {env.global_rank}] before all_reduce dataloader availability "
+            f"[rank {env.global_rank}] before all_reduce dataloader status "
             f"at epoch={epoch} micro_step={micro_step}",
             flush=True,
         )
         dist.all_reduce(t, op=dist.ReduceOp.MIN)
-    return bool(t.item() > 0.5)
+    global_status = float(t.item())
+    any_failed = global_status < 0.0
+    all_have_batch = global_status > 0.5
+    return all_have_batch, any_failed
 
 
 def load_balancing_loss(router_logits, attention_mask):
@@ -492,21 +496,35 @@ def train(args):
         dataloader_iter = iter(dataloader)
         micro_step = 0
         while True:
+            dataloader_error = None
             try:
                 batch = next(dataloader_iter)
                 has_batch = True
             except StopIteration:
                 batch = None
                 has_batch = False
+            except Exception as exc:
+                batch = None
+                has_batch = False
+                dataloader_error = exc
 
             reduction_device = torch.device("cuda", env.local_rank)
-            if not distributed_all_ranks_have_batch(
+            all_have_batch, any_dataloader_failed = distributed_dataloader_status(
                 has_batch,
+                failed=dataloader_error is not None,
                 device=reduction_device,
                 env=env,
                 epoch=epoch,
                 micro_step=micro_step,
-            ):
+            )
+            if any_dataloader_failed:
+                if dataloader_error is not None:
+                    raise dataloader_error
+                raise RuntimeError(
+                    f"A peer rank failed while reading the dataloader at epoch={epoch} "
+                    f"micro_step={micro_step}."
+                )
+            if not all_have_batch:
                 break
 
             input_ids = batch["input_ids"].to(env.local_rank, non_blocking=True)
