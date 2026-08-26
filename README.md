@@ -3,26 +3,23 @@
 Official implementation of **“ToMoE: Converting Dense Large Language Models to Mixture-of-Experts through Dynamic Structural Pruning.”**
 
 - [Paper](https://openreview.net/forum?id=RFHq46pjb6)
-- [Original GitHub repository](https://github.com/gaosh/ToMoE)
 
 ## Overview
 
-This repository contains two separate workflows:
+This repository contains two separate Pipelines:
 
-1. **Original ToMoE conversion** — train a hypernetwork that learns dynamic structural pruning, then convert a dense LLaMA checkpoint into a pruned MoE checkpoint.
-2. **Upcycling and continual pretraining** — train ToMoE with gated attention, export an explicit Hugging Face MoE checkpoint, prepare packed token data, and continue pretraining the exported model with FSDP. Tulu 3 supervised fine-tuning is also available as an optional final stage.
-
-The second workflow does not replace the original ToMoE path. Choose the path that matches the checkpoint you want to produce.
+1. **Pipeline A: Original ToMoE conversion** — train a hypernetwork that learns dynamic structural pruning, then convert a dense LLaMA checkpoint into a pruned MoE checkpoint.
+2. **Pipeline B: Upcycling and continual pretraining** — train ToMoE with gated attention, export an explicit Hugging Face MoE checkpoint, prepare packed token data, and continue pretraining the exported model with FSDP. Tulu 3 supervised fine-tuning is also available as an optional final stage.
 
 ## Previous version
 
-The repository state before the upcycling and continual-pretraining work remains available as the [original ToMoE snapshot](https://github.com/gaosh/ToMoE/tree/a3e1b655dbfd5af0382c67e2a8069301c089f022). Use that permanent link if you only need the earlier hypernetwork-training and pruning implementation.
+The repository state before the upcycling and continual-pretraining work remains available as the [original ToMoE snapshot](https://github.com/gaosh/ToMoE/tree/a3e1b655dbfd5af0382c67e2a8069301c089f022). Use that link if you only need the earlier hypernetwork-training and pruning implementation.
 
-## What is new
+## What is new in addition to the previous ToMoE codebase
 
 The updated codebase adds:
 
-- Gated-attention ToMoE upcycling for Llama 3.
+- Gated-attention ToMoE upcycling.
 - Export from a learned hypernetwork checkpoint to an explicit, standalone Hugging Face MoE model.
 - Parquet dataset download and fixed-length token packing for continual pretraining.
 - Eight-GPU FSDP continual pretraining, checkpoint resume, and optional optimizer-state persistence.
@@ -48,7 +45,7 @@ pip install 'megablocks[gg]==0.10.0'
 
 Access to gated Hugging Face models such as Llama 2 or Llama 3 requires an accepted model license and an authenticated Hugging Face session.
 
-## Workflow A: Original ToMoE conversion
+## Pipeline A: Original ToMoE conversion
 
 ### 1. Train the hypernetwork
 
@@ -95,7 +92,7 @@ accelerate launch --main_process_port 12323 --num_processes 1 \
   --batch_size 32
 ```
 
-## Workflow B: Upcycling and continual pretraining
+## Pipeline B: Upcycling and continual pretraining
 
 The upcycling path is:
 
