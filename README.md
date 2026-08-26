@@ -219,7 +219,7 @@ bash scripts/run_sft_tulu3_fsdp_8gpu.bash
 - `train_continual_pretrain_fsdp.py`: FSDP continual pretraining on packed token shards.
 - `train_sft_fsdp.py`: streaming Tulu-style supervised fine-tuning.
 - `eval_tomoe_gated_actual_moe_ppl.py`: perplexity evaluation.
-- `scripts/`: local launchers for the original workflow, upcycling, export, data packing, continual pretraining, resume, evaluation, SFT, and packed-data validation.
+- `scripts/`: launchers for upcycling, export, data packing, continual pretraining, resume, evaluation, SFT, and packed-data validation.
 - `models/`: dense, dynamic-pruning, gated-attention, and explicit-MoE model definitions.
 - `tomoe/`: hypernetwork and pruning helpers.
 - `data/`: dataset download, packing, and loading utilities.
