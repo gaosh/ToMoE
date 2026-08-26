@@ -3,7 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${SCRIPT_DIR}"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
 
 RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-${1:-}}"
 if [ -z "${RESUME_FROM_CHECKPOINT}" ]; then
@@ -28,6 +29,6 @@ echo "[resume-cpt] resume_from_checkpoint=${RESUME_FROM_CHECKPOINT}"
 echo "[resume-cpt] save_optimizer=${SAVE_OPTIMIZER}"
 
 shift $(( $# > 0 ? 1 : 0 ))
-bash run_continual_pretrain_fsdp_8gpu.bash \
+bash "${SCRIPT_DIR}/run_continual_pretrain_fsdp_8gpu.bash" \
     --resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}" \
     "$@"

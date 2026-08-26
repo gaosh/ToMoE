@@ -5,9 +5,11 @@ set -euo pipefail
 #
 # Defaults are aligned with run_export_tomoe_gated_actual_moe.bash.
 # Override any setting from the command line, for example:
-#   MODEL_NAME_OR_PATH=/path/to/model DATASETS=wikitext,ptb bash run_eval_tomoe_gated_actual_moe_ppl.bash
+#   MODEL_NAME_OR_PATH=/path/to/model DATASETS=wikitext,ptb bash scripts/run_eval_tomoe_gated_actual_moe_ppl.bash
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false
@@ -39,7 +41,7 @@ fi
 
 if [[ "${MODEL_NAME_OR_PATH}" = /* ]] && [[ ! -d "${MODEL_NAME_OR_PATH}" ]]; then
   echo "[ppl] MODEL_NAME_OR_PATH is an absolute path but does not exist: ${MODEL_NAME_OR_PATH}" >&2
-  echo "[ppl] Build it first with run_export_tomoe_gated_actual_moe.bash or set MODEL_NAME_OR_PATH." >&2
+  echo "[ppl] Build it first with scripts/run_export_tomoe_gated_actual_moe.bash or set MODEL_NAME_OR_PATH." >&2
   exit 1
 fi
 

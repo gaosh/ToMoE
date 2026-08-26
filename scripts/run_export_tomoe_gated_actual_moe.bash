@@ -7,7 +7,9 @@ set -euo pipefail
 # This script overwrites the existing output model directory in-place.
 # It does not run PPL evaluation. Use eval_tomoe_gated_actual_moe_ppl.py separately.
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
 
 export PYTHONUNBUFFERED=1
 export TOKENIZERS_PARALLELISM=false

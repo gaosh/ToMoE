@@ -14,6 +14,23 @@ This repository contains two separate workflows:
 
 The second workflow does not replace the original ToMoE path. Choose the path that matches the checkpoint you want to produce.
 
+## Previous version
+
+The repository state before the upcycling and continual-pretraining work remains available as the [original ToMoE snapshot](https://github.com/gaosh/ToMoE/tree/a3e1b655dbfd5af0382c67e2a8069301c089f022). Use that permanent link if you only need the earlier hypernetwork-training and pruning implementation.
+
+## What is new
+
+The updated codebase adds:
+
+- Gated-attention ToMoE upcycling for Llama 3.
+- Export from a learned hypernetwork checkpoint to an explicit, standalone Hugging Face MoE model.
+- Parquet dataset download and fixed-length token packing for continual pretraining.
+- Eight-GPU FSDP continual pretraining, checkpoint resume, and optional optimizer-state persistence.
+- Perplexity evaluation for exported or continually pretrained checkpoints.
+- Streaming Tulu 3 supervised fine-tuning.
+- Optional grouped-GEMM expert execution, validation utilities, and cluster launch examples.
+- Portable launch scripts collected under `scripts/`, with machine-specific paths supplied explicitly.
+
 ## Installation
 
 The supplied environment targets Linux, CUDA 12.8, Python 3.11, and PyTorch 2.7.1.
@@ -100,7 +117,7 @@ This stage learns the structural-pruning hypernetwork and gated-attention parame
 HF_MODEL=meta-llama/Meta-Llama-3-8B \
 DATASET_PATH=/path/to/dataset-cache \
 OUT_DIR=/path/to/gated-attention-hn \
-bash run_gated_attn_llama3_8b.bash
+bash scripts/run_gated_attn_llama3_8b.bash
 ```
 
 The default final checkpoint is named `hn-gated-attn-ckpt-final-0.50.pt`. Override the training knobs through variables such as `TOTAL_N_STEP`, `DYNAMIC_EXPERTS`, `PRUNE_RATIO`, `GATE_RANK`, and `NPROC_PER_NODE`.
@@ -113,7 +130,7 @@ The exporter materializes the selected expert weights, copies the custom modelin
 HF_MODEL=meta-llama/Meta-Llama-3-8B \
 HN_CKPT=/path/to/gated-attention-hn/hn-gated-attn-ckpt-final-0.50.pt \
 OUTPUT_DIR=/path/to/tomoe-actual-moe \
-bash run_export_tomoe_gated_actual_moe.bash
+bash scripts/run_export_tomoe_gated_actual_moe.bash
 ```
 
 ### 3. Prepare continual-pretraining data
@@ -137,7 +154,7 @@ FINEWEB_DATA_DIR=/path/to/raw-data/fineweb_edu \
 FINEWEB_PACKED_DIR=/path/to/packed/fineweb-edu-8192 \
 OPENWEBMATH_DATA_DIR=/path/to/raw-data/openwebmath \
 OPENWEBMATH_PACKED_DIR=/path/to/packed/openwebmath-8192 \
-bash pretokenize_all.bash
+bash scripts/pretokenize_all.bash
 ```
 
 The defaults pack up to 20B FineWeb-Edu tokens and 5B OpenWebMath tokens at sequence length 8192. Override `FINEWEB_TARGET_TOKENS`, `OPENWEBMATH_TARGET_TOKENS`, `SEQ_LEN`, or `SHARD_SEQUENCES` for smaller runs.
@@ -151,7 +168,7 @@ MODEL_NAME_OR_PATH=/path/to/tomoe-actual-moe \
 PACKED_DATA_DIRS=/path/to/packed/fineweb-edu-8192:/path/to/packed/openwebmath-8192 \
 OUTPUT_DIR=/path/to/continual-pretraining-output \
 NPROC_PER_NODE=8 \
-bash run_continual_pretrain_fsdp_8gpu.bash
+bash scripts/run_continual_pretrain_fsdp_8gpu.bash
 ```
 
 Use `TOMOE_MOE_IMPL=grouped_gemm` after installing the optional grouped-GEMM dependency. Common overrides include `MAX_TRAIN_TOKENS`, `LEARNING_RATE`, `SAVE_STEPS`, `GRADIENT_ACCUMULATION_STEPS`, `ATTN_IMPLEMENTATION`, and `COMPILE_MODEL`.
@@ -162,7 +179,7 @@ Resume from a saved checkpoint with the same data and output settings:
 RESUME_FROM_CHECKPOINT=/path/to/continual-pretraining-output/checkpoint-5000 \
 PACKED_DATA_DIRS=/path/to/packed/fineweb-edu-8192:/path/to/packed/openwebmath-8192 \
 OUTPUT_DIR=/path/to/continual-pretraining-output \
-bash run_resume_continual_pretrain_fsdp_8gpu.bash
+bash scripts/run_resume_continual_pretrain_fsdp_8gpu.bash
 ```
 
 If a compiled FSDP checkpoint contains `_orig_mod` prefixes, convert it into a normal Hugging Face checkpoint:
@@ -179,7 +196,7 @@ python convert_ckpt.py \
 ```bash
 MODEL_NAME_OR_PATH=/path/to/exported-or-continued-model \
 DATASETS=wikitext \
-bash run_eval_tomoe_gated_actual_moe_ppl.bash
+bash scripts/run_eval_tomoe_gated_actual_moe_ppl.bash
 ```
 
 `DATASETS` accepts a comma-separated list supported by `eval_tomoe_gated_actual_moe_ppl.py`. The default evaluation uses a 2048-token block and at most 524,288 tokens.
@@ -191,7 +208,7 @@ MODEL_NAME_OR_PATH=/path/to/continual-pretraining-checkpoint \
 OUTPUT_DIR=/path/to/tulu3-sft-output \
 DATASET_NAME=allenai/tulu-3-sft-mixture \
 NPROC_PER_NODE=8 \
-bash run_sft_tulu3_fsdp_8gpu.bash
+bash scripts/run_sft_tulu3_fsdp_8gpu.bash
 ```
 
 ## SLURM launchers
@@ -206,6 +223,7 @@ The three `submit_*.slurm` files are examples for an eight-GPU cluster. Their ac
 - `train_continual_pretrain_fsdp.py`: FSDP continual pretraining on packed token shards.
 - `train_sft_fsdp.py`: streaming Tulu-style supervised fine-tuning.
 - `eval_tomoe_gated_actual_moe_ppl.py`: perplexity evaluation.
+- `scripts/`: local launchers for the original workflow, upcycling, export, data packing, continual pretraining, resume, evaluation, SFT, and packed-data validation.
 - `models/`: dense, dynamic-pruning, gated-attention, and explicit-MoE model definitions.
 - `tomoe/`: hypernetwork and pruning helpers.
 - `data/`: dataset download, packing, and loading utilities.

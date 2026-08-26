@@ -65,4 +65,4 @@ echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 hostname
 nvidia-smi
 
-bash run_sft_tulu3_fsdp_8gpu.bash
+bash scripts/run_sft_tulu3_fsdp_8gpu.bash

@@ -1,3 +1,8 @@
+#!/usr/bin/env bash
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${REPO_ROOT}"
+
 CUDA_VISIBLE_DEVICES=0 nohup torchrun --nproc_per_node=1 --master_port=12343 train_tomoe.py \
 --use_bf16 True \
 --save_interval 100000 \

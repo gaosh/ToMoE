@@ -74,4 +74,4 @@ echo "SAVE_OPTIMIZER=${SAVE_OPTIMIZER}"
 hostname
 nvidia-smi
 
-bash run_resume_continual_pretrain_fsdp_8gpu.bash "${RESUME_FROM_CHECKPOINT}"
+bash scripts/run_resume_continual_pretrain_fsdp_8gpu.bash "${RESUME_FROM_CHECKPOINT}"

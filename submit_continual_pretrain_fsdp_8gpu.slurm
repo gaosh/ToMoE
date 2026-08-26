@@ -62,4 +62,4 @@ echo "SAVE_STEPS=${SAVE_STEPS}"
 hostname
 nvidia-smi
 
-SAVE_STEPS="${SAVE_STEPS}" bash run_continual_pretrain_fsdp_8gpu.bash
+SAVE_STEPS="${SAVE_STEPS}" bash scripts/run_continual_pretrain_fsdp_8gpu.bash
