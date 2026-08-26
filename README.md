@@ -19,14 +19,13 @@ The repository state before the upcycling and continual-pretraining work remains
 
 The updated codebase adds:
 
-- Gated-attention ToMoE upcycling.
-- Export from a learned hypernetwork checkpoint to an explicit, standalone Hugging Face MoE model.
-- Parquet dataset download and fixed-length token packing for continual pretraining.
-- Eight-GPU FSDP continual pretraining, checkpoint resume, and optional optimizer-state persistence.
-- Perplexity evaluation for exported or continually pretrained checkpoints.
-- Streaming Tulu 3 supervised fine-tuning.
+- Gated-attention ToMoE upcycling, validated on Llama 3 8B, resulting in an MoE model with approximately 3.5B active parameters and 20B total parameters.
+- Export from a learned hypernetwork checkpoint to an explicit MoE model.
+- Token packing for continual pretraining.
+- Eight-GPU FSDP continual pretraining.
+- Optional Tulu 3 supervised fine-tuning.
 - Optional grouped-GEMM expert execution and validation utilities.
-- Portable launch scripts collected under `scripts/`, with machine-specific paths supplied explicitly.
+- Portable launch scripts collected under `scripts/`.
 
 ## Installation
 
@@ -45,7 +44,7 @@ pip install 'megablocks[gg]==0.10.0'
 
 Access to gated Hugging Face models such as Llama 2 or Llama 3 requires an accepted model license and an authenticated Hugging Face session.
 
-## Pipeline A: Original ToMoE conversion
+## Pipeline A: Original ToMoE conversion from the paper
 
 ### 1. Train the hypernetwork
 
