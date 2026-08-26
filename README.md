@@ -28,7 +28,7 @@ The updated codebase adds:
 - Eight-GPU FSDP continual pretraining, checkpoint resume, and optional optimizer-state persistence.
 - Perplexity evaluation for exported or continually pretrained checkpoints.
 - Streaming Tulu 3 supervised fine-tuning.
-- Optional grouped-GEMM expert execution, validation utilities, and cluster launch examples.
+- Optional grouped-GEMM expert execution and validation utilities.
 - Portable launch scripts collected under `scripts/`, with machine-specific paths supplied explicitly.
 
 ## Installation
@@ -210,10 +210,6 @@ DATASET_NAME=allenai/tulu-3-sft-mixture \
 NPROC_PER_NODE=8 \
 bash scripts/run_sft_tulu3_fsdp_8gpu.bash
 ```
-
-## SLURM launchers
-
-The three `submit_*.slurm` files are examples for an eight-GPU cluster. Their account, partition, reservation, repository path, and Conda environment are site-specific and must be edited before submission. Pass `RESUME_FROM_CHECKPOINT` explicitly when using the resume launcher.
 
 ## Repository layout
 
