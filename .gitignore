@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Local environments and editor files
+.env
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Experiment tracking and scheduler logs
+logs/
+wandb/
+*.out
+*.err
+
+# Local model, checkpoint, and packed-data artifacts
+outputs/
+checkpoints/
+checkpoint-*/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.npy
+*.npz

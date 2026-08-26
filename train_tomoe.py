@@ -101,7 +101,7 @@ def main(
     dataset_ratio: list = [1], 
     out_dir: str = None,
     hf_model: str = 'meta-llama/Llama-2-7b-hf',
-    dataset_path: str = '/orange/sgao1/sgao1/',
+    dataset_path: str = './',
     learning_rate: float = None,
     total_n_step: int = 100000,
     start_iter: int = 0, 

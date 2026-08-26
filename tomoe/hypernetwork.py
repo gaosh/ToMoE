@@ -43,9 +43,8 @@ def gumbel_sigmoid_function(logits: torch.Tensor, tau: float = 1, hard: bool = F
 
     """
     if sample:
-        device = logits.get_device()
         gumbels = (
-        -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format, device=device).exponential_().log()
+        -torch.empty_like(logits, memory_format=torch.legacy_contiguous_format, device=logits.device).exponential_().log()
         )  # ~Gumbel(0, 1)
         gumbels = (logits + gumbels + offset) / tau  # ~Gumbel(logits, tau)
     else:
@@ -62,12 +61,7 @@ def gumbel_sigmoid_function(logits: torch.Tensor, tau: float = 1, hard: bool = F
     return ret
 
 def gumbel_softmax_sample(logits,  T, sample=True):
-    gumbel_sample = sample_gumbel(logits.size())
-    if logits.get_device() == -1:
-        logits = logits.cpu()
-        gumbel_sample = gumbel_sample.cpu()
-    else:
-        gumbel_sample = gumbel_sample.to(logits.get_device())
+    gumbel_sample = sample_gumbel(logits.size()).to(logits.device)
 
     if sample:
         y = logits + gumbel_sample
@@ -266,7 +260,7 @@ class single_experts_module(nn.Module):
         if self.attn_flag:
             # width_mean = witdh_cover = 0
             self.rnn_state = rnn_state
-            device = rnn_state.get_device()
+            device = rnn_state.device
             if self.qk_static_flag:
                 output_constant = self.linear_decoder(F.gelu(self.ln(rnn_state.mean(dim=0).unsqueeze(0))))[:, self.head_dim:]
                 binary_approx_part2 = gumbel_sigmoid_function(output_constant, offset=self.base, tau=self.T, sample=True).squeeze()
@@ -289,6 +283,7 @@ class single_experts_module(nn.Module):
             out_before_binary = self.linear_decoder(F.gelu(self.ln(full_embeding)))
             #8xmiddle
             binary_approx = gumbel_sigmoid_function(out_before_binary, offset=self.base, tau=self.T, sample=True).squeeze()
+            self.binary_approx_for_eval = binary_approx.detach()
 
             binary = hard_sample(binary_approx)
             # binary = binary_approx
@@ -319,7 +314,7 @@ class single_experts_module(nn.Module):
         if self.attn_flag:
             #width_final = []
             #full_embeding = rnn_state
-            device = rnn_state.get_device()
+            device = rnn_state.device
             pair_loss =  torch.scalar_tensor(0).to(device).float()
             width_final = torch.scalar_tensor(0).to(device).float()
             # width_final = torch.scalar_tensor(0).to(device).float()
@@ -334,7 +329,7 @@ class single_experts_module(nn.Module):
             out_before_binary = self.linear_decoder(F.gelu(self.ln(full_embeding)))
             binary = gumbel_sigmoid_function(logits=out_before_binary, tau=self.T, offset=self.base, sample=True, hard=True).squeeze()
 
-            device = binary.get_device()
+            device = binary.device
 
             union_of_experts = experts_union(binary)
             
@@ -389,7 +384,7 @@ class virtual_dynamic_operation(nn.Module):
 
             return outputs
         else:
-            return torch.ones(self.middle_dim).to(input.get_device())
+            return torch.ones(self.middle_dim, device=input.device, dtype=input.dtype)
     
     def set_rnn_state(self, rnn_state):
         self.rnn_state = torch.zeros(rnn_state.size(0), self.emb_dim)
@@ -419,6 +414,102 @@ class virtual_dynamic_operation(nn.Module):
                 router_prob_per_expert = torch.mean(self.router_logits, dim=0) # [num_experts]
                 overall_loss = torch.mean(tokens_per_expert * router_prob_per_expert.unsqueeze(0)) # / top_k
                 return overall_loss * num_experts
+
+
+class SingleGatedAttnModule(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        head_dim: int,
+        rank: int = 128,
+        init_bias: float = 3.0,
+    ):
+        super().__init__()
+        if d_model <= 0 or n_heads <= 0 or head_dim <= 0 or rank <= 0:
+            raise ValueError("d_model, n_heads, head_dim, and rank must be positive.")
+
+        self.d_model = d_model
+        self.n_heads = n_heads
+        self.head_dim = head_dim
+        self.rank = rank
+
+        self.gate_down = nn.Linear(d_model, rank, bias=False)
+        self.ln = nn.LayerNorm(rank)
+        self.gate_up = nn.Linear(rank, n_heads * head_dim, bias=True)
+        with torch.no_grad():
+            self.gate_up.bias.fill_(init_bias)
+
+        self.rnn_state = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() != 3 or x.size(-1) != self.d_model:
+            raise ValueError(f"x must be [B, T, {self.d_model}], got {tuple(x.shape)}")
+
+        batch_size, sequence_length, _ = x.shape
+        z = self.gate_down(x)
+        if self.rnn_state is not None:
+            rnn_state = self.rnn_state.to(device=z.device, dtype=z.dtype)
+            if rnn_state.dim() == 3:
+                rnn_state = rnn_state.mean(dim=0)
+            if rnn_state.dim() == 2 and rnn_state.size(0) == 1:
+                rnn_state = rnn_state.squeeze(0)
+            if rnn_state.dim() == 1:
+                z = z + rnn_state.view(1, 1, -1)
+            elif rnn_state.dim() == 2 and rnn_state.size(0) == batch_size:
+                z = z + rnn_state[:, None, :]
+            else:
+                raise ValueError(f"Unsupported rnn_state shape for gated attention: {tuple(rnn_state.shape)}")
+
+        z = F.gelu(self.ln(z))
+        gate = torch.sigmoid(self.gate_up(z))
+        self.last_gate = gate
+        return gate.view(batch_size, sequence_length, self.n_heads, self.head_dim)
+
+
+class GatedAttList(nn.Module):
+    def __init__(
+        self,
+        num_layers: int,
+        d_model: int,
+        n_heads: int,
+        head_dim: int,
+        rank: int = 128,
+        init_bias: float = 3.0,
+    ):
+        super().__init__()
+        self.modules_list = nn.ModuleList(
+            [
+                SingleGatedAttnModule(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    head_dim=head_dim,
+                    rank=rank,
+                    init_bias=init_bias,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+    def __getitem__(self, idx):
+        return self.modules_list[idx]
+
+    def __len__(self):
+        return len(self.modules_list)
+
+    def __iter__(self):
+        return iter(self.modules_list)
+
+
+class virtual_gate_module(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.gate_module = None
+
+    def forward(self, hidden_states, use_gate=False):
+        if self.gate_module is None or not use_gate:
+            return 1.0
+        return self.gate_module(hidden_states)
 
 
 def generate_random_mask_like(input_tensor, mask_prob=0.96):
