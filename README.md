@@ -21,11 +21,9 @@ The updated codebase adds:
 
 - Gated-attention ToMoE upcycling, validated on Llama 3 8B, resulting in an MoE model with approximately 3.5B active parameters and 20B total parameters.
 - Export from a learned hypernetwork checkpoint to an explicit MoE model.
-- Token packing for continual pretraining.
-- Eight-GPU FSDP continual pretraining.
+- Eight-GPU FSDP and token packing continual pretraining.
 - Optional Tulu 3 supervised fine-tuning.
 - Optional grouped-GEMM expert execution and validation utilities.
-- Portable launch scripts collected under `scripts/`.
 
 ## Installation
 
