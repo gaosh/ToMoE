@@ -1,8 +1,8 @@
 # ToMoE (TMLR)
 
-Official implementation of **“ToMoE: Converting Dense Large Language Models to Mixture-of-Experts through Dynamic Structural Pruning.”**
+Official implementation of **“ToMoE: Converting Dense Large Language Models to Mixture-of-Experts through Dynamic Structural Pruning.”** 
 
-- [Paper](https://openreview.net/forum?id=RFHq46pjb6)
+Paper: [https://openreview.net/pdf?id=RFHq46pjb6](https://openreview.net/forum?id=RFHq46pjb6)
 
 ## Overview
 
@@ -187,17 +187,7 @@ python convert_ckpt.py \
   --test-load
 ```
 
-### 5. Evaluate perplexity
-
-```bash
-MODEL_NAME_OR_PATH=/path/to/exported-or-continued-model \
-DATASETS=wikitext \
-bash scripts/run_eval_tomoe_gated_actual_moe_ppl.bash
-```
-
-`DATASETS` accepts a comma-separated list supported by `eval_tomoe_gated_actual_moe_ppl.py`. The default evaluation uses a 2048-token block and at most 524,288 tokens.
-
-### 6. Optional Tulu 3 supervised fine-tuning
+### 5. Optional Tulu 3 supervised fine-tuning
 
 ```bash
 MODEL_NAME_OR_PATH=/path/to/continual-pretraining-checkpoint \
